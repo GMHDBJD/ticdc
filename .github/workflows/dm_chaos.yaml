@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       pr:
-        description: 'Which PR you want to trigger'
+        description: 'Which PR do you want to trigger'
         required: true
         default: ''
 
