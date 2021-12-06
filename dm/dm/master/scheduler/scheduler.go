@@ -211,8 +211,6 @@ func (s *Scheduler) Start(pCtx context.Context, etcdCli *clientv3.Client) (err e
 		return terror.ErrSchedulerStarted.Generate()
 	}
 
-	hahaha
-
 	s.etcdCli = etcdCli // set s.etcdCli first for safety, observeWorkerEvent will use s.etcdCli in retry
 	s.reset()           // reset previous status.
 
