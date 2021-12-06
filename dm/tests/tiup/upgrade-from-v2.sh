@@ -67,8 +67,7 @@ function upgrade_to_current_v2() {
 	fi
 	if [[ "$CUR_VER" == "nightly" && "$ref" == "refs/pull"* || "$id" != "" ]]; then
 		echo "hihihi"
-		patch_nightly_with_tiup_mirror $PRE_VER
-	fi
+  fi
 
 	# uninstall previous dmctl, otherwise dmctl:nightly still use PRE_VER.
 	# FIXME: It may be a bug in tiup mirror.
