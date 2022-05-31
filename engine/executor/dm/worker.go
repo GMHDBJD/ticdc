@@ -20,7 +20,11 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
+	"github.com/pingcap/tiflow/dm/dm/config"
 	dmconfig "github.com/pingcap/tiflow/dm/dm/config"
+	"github.com/pingcap/tiflow/dm/dm/pb"
+	"github.com/pingcap/tiflow/dm/dm/worker"
+	"github.com/pingcap/tiflow/dm/pkg/backoff"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
@@ -73,6 +77,7 @@ type dmWorker struct {
 
 	unitHolder   unitHolder
 	messageAgent dmpkg.MessageAgent
+	autoResume   *worker.AutoResumeInfo
 
 	mu                 sync.RWMutex
 	cfg                *dmconfig.SubTaskConfig
@@ -84,6 +89,10 @@ type dmWorker struct {
 }
 
 func newDMWorker(ctx *dcontext.Context, masterID libModel.MasterID, workerType lib.WorkerType, cfg *dmconfig.SubTaskConfig) *dmWorker {
+	// TODO: support config later
+	// nolint:errcheck
+	bf, _ := backoff.NewBackoff(config.DefaultBackoffFactor, config.DefaultBackoffJitter, config.DefaultBackoffMin, config.DefaultBackoffMax)
+	autoResume := &worker.AutoResumeInfo{Backoff: bf, LatestPausedTime: time.Now(), LatestResumeTime: time.Now()}
 	w := &dmWorker{
 		cfg:        cfg,
 		stage:      metadata.StageInit,
@@ -91,6 +100,7 @@ func newDMWorker(ctx *dcontext.Context, masterID libModel.MasterID, workerType l
 		taskID:     cfg.SourceID,
 		masterID:   masterID,
 		unitHolder: newUnitHolderImpl(workerType, cfg),
+		autoResume: autoResume,
 	}
 
 	// nolint:errcheck
@@ -120,6 +130,9 @@ func (w *dmWorker) InitImpl(ctx context.Context) error {
 
 // Tick implements lib.WorkerImpl.Tick
 func (w *dmWorker) Tick(ctx context.Context) error {
+	if err := w.checkAndAutoResume(ctx); err != nil {
+		return err
+	}
 	if err := w.tryUpdateStatus(ctx); err != nil {
 		return err
 	}
@@ -189,7 +202,7 @@ func (w *dmWorker) persistStorage(ctx context.Context) error {
 
 // tryUpdateStatus updates status when task stage changed.
 func (w *dmWorker) tryUpdateStatus(ctx context.Context) error {
-	stage := w.unitHolder.Stage()
+	stage, _ := w.unitHolder.Stage()
 	if stage == w.getStage() {
 		return nil
 	}
@@ -237,4 +250,25 @@ func (w *dmWorker) setStage(stage metadata.TaskStage) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.stage = stage
+}
+
+func (w *dmWorker) checkAndAutoResume(ctx context.Context) error {
+	stage, result := w.unitHolder.Stage()
+	if stage != metadata.StageError {
+		return nil
+	}
+
+	log.L().Error("task runs with error", zap.Any("error msg", result.Errors))
+	subtaskStage := &pb.SubTaskStatus{
+		Stage:  pb.Stage_Paused,
+		Result: result,
+	}
+	strategy := w.autoResume.CheckResumeSubtask(subtaskStage, config.DefaultBackoffRollback)
+	log.L().Info("got auto resume strategy", zap.Stringer("strategy", strategy))
+
+	if strategy == worker.ResumeDispatch {
+		log.L().Info("dispatch auto resume task")
+		return w.unitHolder.Resume(ctx)
+	}
+	return nil
 }

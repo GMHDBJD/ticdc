@@ -34,7 +34,7 @@ type unitHolder interface {
 	Close(ctx context.Context) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
-	Stage() metadata.TaskStage
+	Stage() (metadata.TaskStage, *pb.ProcessResult)
 	Status(ctx context.Context) interface{}
 }
 
@@ -94,7 +94,7 @@ func (u *unitHolderImpl) Pause(ctx context.Context) error {
 	u.processMu.Lock()
 	defer u.processMu.Unlock()
 
-	stage := u.Stage()
+	stage, _ := u.Stage()
 	if stage != metadata.StageRunning && stage != metadata.StageError {
 		return errors.Errorf("failed to pause unit with stage %d", stage)
 	}
@@ -114,7 +114,7 @@ func (u *unitHolderImpl) Resume(ctx context.Context) error {
 	u.processMu.Lock()
 	defer u.processMu.Unlock()
 
-	stage := u.Stage()
+	stage, _ := u.Stage()
 	if stage != metadata.StagePaused && stage != metadata.StageError {
 		return errors.Errorf("failed to resume unit with stage %d", stage)
 	}
@@ -152,7 +152,7 @@ func (u *unitHolderImpl) Close(ctx context.Context) error {
 }
 
 // Stage implement UnitHolder.Stage
-func (u *unitHolderImpl) Stage() metadata.TaskStage {
+func (u *unitHolderImpl) Stage() (metadata.TaskStage, *pb.ProcessResult) {
 	u.fieldMu.RLock()
 	ctx := u.runCtx
 	result := u.result
@@ -167,16 +167,16 @@ func (u *unitHolderImpl) Stage() metadata.TaskStage {
 
 	switch {
 	case canceled && result == nil:
-		return metadata.StagePausing
+		return metadata.StagePausing, nil
 	case canceled && result != nil:
-		return metadata.StagePaused
+		return metadata.StagePaused, result
 	case !canceled && result == nil:
-		return metadata.StageRunning
+		return metadata.StageRunning, nil
 	// !canceled && result != nil
 	case len(result.Errors) == 0:
-		return metadata.StageFinished
+		return metadata.StageFinished, result
 	default:
-		return metadata.StageError
+		return metadata.StageError, result
 	}
 }
 
