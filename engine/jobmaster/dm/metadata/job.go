@@ -34,9 +34,11 @@ const (
 	StageRunning
 	StagePaused
 	StageFinished
+	StageError
 	// UnScheduled means the task is not scheduled.
 	// This usually happens when the worker is offline.
 	StageUnscheduled
+	StagePausing
 )
 
 // Job represents the state of a job.

@@ -120,9 +120,6 @@ func (w *dmWorker) InitImpl(ctx context.Context) error {
 
 // Tick implements lib.WorkerImpl.Tick
 func (w *dmWorker) Tick(ctx context.Context) error {
-	if err := w.unitHolder.Tick(ctx); err != nil {
-		return err
-	}
 	if err := w.tryUpdateStatus(ctx); err != nil {
 		return err
 	}
