@@ -102,6 +102,7 @@ func TestUnitHolder(t *testing.T) {
 	u.setResult(pb.ProcessResult{Errors: []*pb.ProcessError{{
 		Message: "context canceled",
 	}}})
+	unitHolder.processWg.Wait()
 	stage, result = unitHolder.Stage()
 	require.Len(t, result.Errors, 0)
 	require.Equal(t, metadata.StageFinished, stage)

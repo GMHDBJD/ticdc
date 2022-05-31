@@ -115,7 +115,7 @@ func (jm *JobMaster) InitImpl(ctx context.Context) error {
 	if err := jm.checkpointAgent.Init(ctx); err != nil {
 		return err
 	}
-	return jm.taskManager.OperateTask(ctx, Create, jm.jobCfg, nil)
+	return jm.taskManager.OperateTask(ctx, dmpkg.Create, jm.jobCfg, nil)
 }
 
 // Tick implements JobMasterImpl.Tick
@@ -217,7 +217,7 @@ func (jm *JobMaster) OnMasterMessage(topic p2p.Topic, message interface{}) error
 // CloseImpl implements JobMasterImpl.CloseImpl
 func (jm *JobMaster) CloseImpl(ctx context.Context) error {
 	log.L().Info("close the dm jobmaster", zap.String("id", jm.workerID))
-	if err := jm.taskManager.OperateTask(ctx, Delete, nil, nil); err != nil {
+	if err := jm.taskManager.OperateTask(ctx, dmpkg.Delete, nil, nil); err != nil {
 		return err
 	}
 

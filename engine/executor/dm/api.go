@@ -51,3 +51,19 @@ func (w *dmWorker) StopWorker(ctx context.Context, msg *dmpkg.StopWorkerMessage)
 	}
 	return w.closeAndExit(ctx, w.workerStatus())
 }
+
+// OperateTask implements the api of operate task message.
+// OperateTask is called by refection of commandHandler.
+func (w *dmWorker) OperateTask(ctx context.Context, msg *dmpkg.OperateTaskMessage) error {
+	if w.taskID != msg.Task {
+		return errors.Errorf("task id mismatch, get %s, actually %s", msg.Task, w.taskID)
+	}
+	switch msg.Op {
+	case dmpkg.Pause:
+		return w.unitHolder.Pause(ctx)
+	case dmpkg.Resume:
+		return w.unitHolder.Resume(ctx)
+	default:
+		return errors.Errorf("unsupported op type %d for task %s", msg.Op, w.taskID)
+	}
+}

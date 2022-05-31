@@ -16,6 +16,7 @@ package dm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -238,6 +239,26 @@ func TestQueryStatusAPI(t *testing.T) {
 	status2, err := json.MarshalIndent(jobStatus, "", "\t")
 	require.NoError(t, err)
 	require.Equal(t, sortString(string(status)), sortString(string(status2)))
+}
+
+func TestOperateTask(t *testing.T) {
+	jm := &JobMaster{
+		taskManager: NewTaskManager(nil, metadata.NewJobStore("master-id", kvmock.NewMetaMock()), nil),
+	}
+	require.EqualError(t, jm.OperateTask(context.Background(), dmpkg.Delete, nil, nil), fmt.Sprintf("unsupport op type %d for operate task", dmpkg.Delete))
+	require.EqualError(t, jm.OperateTask(context.Background(), dmpkg.Pause, nil, nil), "state not found")
+
+	// test with DebugJob
+	var args struct {
+		Tasks []string
+		Op    dmpkg.OperateType
+	}
+	args.Tasks = []string{"task1"}
+	args.Op = dmpkg.Pause
+	jsonArg, err := json.Marshal(args)
+	require.NoError(t, err)
+	resp := jm.DebugJob(context.Background(), &enginepb.DebugJobRequest{Command: dmpkg.OperateTask, JsonArg: string(jsonArg)})
+	require.Equal(t, resp.Err.Message, "state not found")
 }
 
 func sortString(w string) string {

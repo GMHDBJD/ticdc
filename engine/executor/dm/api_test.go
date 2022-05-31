@@ -134,3 +134,26 @@ func TestStopWorker(t *testing.T) {
 	err := dmWorker.StopWorker(context.Background(), &dmpkg.StopWorkerMessage{Task: "task-id"})
 	require.True(t, errors.ErrWorkerFinish.Equal(err))
 }
+
+func TestOperateTask(t *testing.T) {
+	dctx := dcontext.Background()
+	dp := deps.NewDeps()
+	require.NoError(t, dp.Provide(func() p2p.MessageHandlerManager {
+		return p2p.NewMockMessageHandlerManager()
+	}))
+	dctx = dctx.WithDeps(dp)
+
+	dmWorker := newDMWorker(dctx, "master-id", lib.WorkerDMDump, &config.SubTaskConfig{SourceID: "task-id"})
+	dmWorker.BaseWorker = lib.MockBaseWorker("worker-id", "master-id", dmWorker)
+	dmWorker.BaseWorker.Init(context.Background())
+	mockUnitHolder := &mockUnitHolder{}
+	dmWorker.unitHolder = mockUnitHolder
+
+	require.EqualError(t, dmWorker.OperateTask(context.Background(), &dmpkg.OperateTaskMessage{Task: "wrong-task-id"}), "task id mismatch, get wrong-task-id, actually task-id")
+	mockUnitHolder.On("Pause").Return(nil).Once()
+	require.Nil(t, dmWorker.OperateTask(context.Background(), &dmpkg.OperateTaskMessage{Task: "task-id", Op: dmpkg.Pause}))
+	mockUnitHolder.On("Resume").Return(nil).Once()
+	require.Nil(t, dmWorker.OperateTask(context.Background(), &dmpkg.OperateTaskMessage{Task: "task-id", Op: dmpkg.Resume}))
+	require.EqualError(t, dmWorker.OperateTask(context.Background(), &dmpkg.OperateTaskMessage{Task: "task-id", Op: dmpkg.Update}),
+		fmt.Sprintf("unsupported op type %d for task %s", dmpkg.Update, "task-id"))
+}
