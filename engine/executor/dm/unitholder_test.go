@@ -42,6 +42,24 @@ func TestUnitHolder(t *testing.T) {
 	unitHolder = newUnitHolderImpl(lib.WorkerDMSync, &config.SubTaskConfig{Name: "job-id", SourceID: "task-id", Flavor: mysql.MySQLFlavor})
 	require.IsType(t, &syncer.Syncer{}, unitHolder.unit)
 
+	// test Binlog api
+	// wrong type
+	unitHolder.unit = &dumpling.Dumpling{}
+	msg, err := unitHolder.Binlog(context.Background(), &dmpkg.BinlogTaskRequest{})
+	require.Error(t, err)
+	require.Equal(t, "", msg)
+	// no binlog error
+	unitHolder.unit = syncer.NewSyncer(&config.SubTaskConfig{Flavor: mysql.MySQLFlavor}, nil, nil)
+	unitHolder.runCtx = context.Background()
+	msg, err = unitHolder.Binlog(context.Background(), &dmpkg.BinlogTaskRequest{})
+	require.Error(t, err)
+	require.Equal(t, "", msg)
+	// binlog skip
+	unitHolder.unit = syncer.NewSyncer(&config.SubTaskConfig{Flavor: mysql.MySQLFlavor}, nil, nil)
+	msg, err = unitHolder.Binlog(context.Background(), &dmpkg.BinlogTaskRequest{Op: pb.ErrorOp_Skip, BinlogPos: "mysql-bin.000001:2345"})
+	require.Nil(t, err)
+	require.Equal(t, "", msg)
+
 	u := &mockUnit{}
 	unitHolder.unit = u
 	u.On("Init").Return(errors.New("error")).Once()
@@ -99,12 +117,6 @@ func TestUnitHolder(t *testing.T) {
 	require.Equal(t, metadata.StageRunning, stage)
 	// resume again
 	require.Error(t, unitHolder.Resume(context.Background()))
-
-	// test Binlog api
-	u.On("Type").Return(pb.UnitType_Dump).Once()
-	msg, err := unitHolder.Binlog(context.Background(), &dmpkg.BinlogTaskRequest{})
-	require.Error(t, err)
-	require.Equal(t, "", msg)
 
 	// mock finished
 	time.Sleep(time.Second)

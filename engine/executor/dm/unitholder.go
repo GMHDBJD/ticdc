@@ -200,7 +200,7 @@ func (u *unitHolderImpl) Binlog(ctx context.Context, req *dmpkg.BinlogTaskReques
 	}
 
 	stage, _ := u.Stage()
-	if stage == metadata.StagePaused && req.Op != pb.ErrorOp_List {
+	if (stage == metadata.StagePaused || stage == metadata.StageError) && req.Op != pb.ErrorOp_List {
 		err = u.Resume(ctx)
 	}
 	return msg, err

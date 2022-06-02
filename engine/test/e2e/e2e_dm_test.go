@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -197,8 +198,27 @@ func testSimpleAllModeTask(
 	require.Nil(t, resp2.Err)
 	require.Contains(t, resp2.JsonRet, `"flavor":"mysql"`)
 
+	noError(mysql.Exec("alter table " + db + ".t1 add column new_col int unique"))
+	noError(mysql.Exec("insert into " + db + ".t1 values(4,4)"))
+
+	// eventually error
+	require.Eventually(t, func() bool {
+		resp2, err = queryStatus(ctx, client, resp.JobIdStr, []string{source1}, t)
+		require.NoError(t, err)
+		require.Nil(t, resp2.Err)
+		require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &jobStatus))
+		return jobStatus.TaskStatus[source1].Status.Stage == metadata.StageError &&
+			strings.Contains(jobStatus.TaskStatus[source1].Status.Result.Errors[0].RawCause,
+				`unsupported add column 'new_col' constraint UNIQUE KEY when altering`)
+	}, time.Second*10, time.Second)
+
+	// binlog replace
 	binlogReq := &dmpkg.BinlogRequest{
-		Op: pb.ErrorOp_List,
+		Op: pb.ErrorOp_Replace,
+		Sqls: []string{
+			"alter table " + db + ".t1 add column new_col int;",
+			"alter table " + db + ".t1 add unique(new_col);",
+		},
 	}
 	resp2, err = binlog(ctx, client, resp.JobId, binlogReq, t)
 	require.NoError(t, err)
@@ -207,8 +227,19 @@ func testSimpleAllModeTask(
 	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogResp))
 	require.Equal(t, "", binlogResp.ErrorMsg)
 	require.Len(t, binlogResp.Results, 1)
-	require.Equal(t, binlogResp.Results[source1].ErrorMsg, "")
-	require.Equal(t, binlogResp.Results[source1].Msg, "")
+	require.Equal(t, "", binlogResp.Results[source1].ErrorMsg)
+	require.Equal(t, "", binlogResp.Results[source1].Msg)
+	waitRow("new_col = 4")
+
+	// binlog replace again
+	resp2, err = binlog(ctx, client, resp.JobIdStr, binlogReq, t)
+	require.NoError(t, err)
+	require.Nil(t, resp2.Err)
+	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogResp))
+	require.Equal(t, "", binlogResp.ErrorMsg)
+	require.Len(t, binlogResp.Results, 1)
+	require.Equal(t, "", binlogResp.Results[source1].Msg)
+	require.Equal(t, fmt.Sprintf("source '%s' has no error", source1), binlogResp.Results[source1].ErrorMsg)
 }
 
 func queryStatus(ctx context.Context, client client.MasterClient, jobID string, tasks []string, t *testing.T) (*enginepb.DebugJobResponse, error) {
