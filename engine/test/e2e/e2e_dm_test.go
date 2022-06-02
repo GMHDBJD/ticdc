@@ -189,6 +189,12 @@ func testSimpleAllModeTask(
 		require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &jobStatus))
 		return jobStatus.TaskStatus[source1].Status.Stage == metadata.StageRunning
 	}, time.Second*10, time.Second)
+
+	// get job cfg
+	resp2, err = getJobCfg(ctx, client, resp.JobIdStr, t)
+	require.NoError(t, err)
+	require.Nil(t, resp2.Err)
+	require.Contains(t, resp2.JsonRet, `"flavor":"mysql"`)
 }
 
 func queryStatus(ctx context.Context, client client.MasterClient, jobID string, tasks []string, t *testing.T) (*pb.DebugJobResponse, error) {
@@ -215,4 +221,10 @@ func operateTask(ctx context.Context, client client.MasterClient, jobID string, 
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	return client.DebugJob(ctx2, &pb.DebugJobRequest{JobId: jobID, Command: dmpkg.OperateTask, JsonArg: string(jsonArg)})
+}
+
+func getJobCfg(ctx context.Context, client client.MasterClient, jobID string, t *testing.T) (*pb.DebugJobResponse, error) {
+	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return client.DebugJob(ctx2, &pb.DebugJobRequest{JobIdStr: jobID, Command: dmpkg.GetTaskCfg})
 }

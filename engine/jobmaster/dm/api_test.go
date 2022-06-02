@@ -24,6 +24,7 @@ import (
 
 	"github.com/pingcap/tiflow/dm/dm/pb"
 	"github.com/pingcap/tiflow/engine/enginepb"
+	"github.com/pingcap/tiflow/engine/jobmaster/dm/config"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/runtime"
 	"github.com/pingcap/tiflow/engine/lib"
@@ -288,6 +289,24 @@ func TestOperateTask(t *testing.T) {
 	require.NoError(t, err)
 	resp := jm.DebugJob(context.Background(), &enginepb.DebugJobRequest{Command: dmpkg.OperateTask, JsonArg: string(jsonArg)})
 	require.Equal(t, resp.Err.Message, "state not found")
+}
+
+func TestGetJobCfg(t *testing.T) {
+	kvClient := kvmock.NewMetaMock()
+	jm := &JobMaster{
+		metadata: metadata.NewMetaData("master-id", kvClient),
+	}
+	jobCfg, err := jm.GetJobCfg(context.Background())
+	require.EqualError(t, err, "state not found")
+	require.Nil(t, jobCfg)
+
+	jobCfg = &config.JobCfg{Name: "job-id", Upstreams: []*config.UpstreamCfg{{}}}
+	job := metadata.NewJob(jobCfg)
+	jm.metadata.JobStore().Put(context.Background(), job)
+
+	jobCfg, err = jm.GetJobCfg(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, "job-id", jobCfg.Name)
 }
 
 func sortString(w string) string {

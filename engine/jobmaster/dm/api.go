@@ -134,6 +134,21 @@ func (jm *JobMaster) OperateTask(ctx context.Context, op dmpkg.OperateType, cfg 
 	}
 }
 
+// GetJobCfg gets job config.
+func (jm *JobMaster) GetJobCfg(ctx context.Context) (*config.JobCfg, error) {
+	state, err := jm.metadata.JobStore().Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	job := state.(*metadata.Job)
+
+	taskCfgs := make([]*config.TaskCfg, 0, len(job.Tasks))
+	for _, task := range job.Tasks {
+		taskCfgs = append(taskCfgs, task.Cfg)
+	}
+	return config.FromTaskCfgs(taskCfgs), nil
+}
+
 // DebugJob debugs job.
 func (jm *JobMaster) DebugJob(ctx context.Context, req *pb.DebugJobRequest) *pb.DebugJobResponse {
 	var (
@@ -164,6 +179,8 @@ func (jm *JobMaster) DebugJob(ctx context.Context, req *pb.DebugJobRequest) *pb.
 			}}
 		}
 		err = jm.OperateTask(ctx, jsonArg.Op, nil, jsonArg.Tasks)
+	case dmpkg.GetTaskCfg:
+		resp, err = jm.GetJobCfg(ctx)
 	default:
 	}
 

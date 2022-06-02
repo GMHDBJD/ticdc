@@ -27,6 +27,7 @@ const (
 	OperateTask p2p.Topic = "OperateTask"
 	QueryStatus p2p.Topic = "QueryStatus"
 	StopWorker  p2p.Topic = "StopWorker"
+	GetTaskCfg  p2p.Topic = "GetTaskCfg"
 )
 
 // OperateType represents internal operate type in DM
