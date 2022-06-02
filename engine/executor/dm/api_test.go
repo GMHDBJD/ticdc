@@ -174,9 +174,19 @@ func TestBinlog(t *testing.T) {
 	mockUnitHolder := &mockUnitHolder{}
 	dmWorker := &dmWorker{taskID: "task-id", unitHolder: mockUnitHolder}
 
-	require.Equal(t, "task id mismatch, get wrong-task-id, actually task-id", dmWorker.BinlogTask(context.Background(), &dmpkg.BinlogTaskRequest{Task: "wrong-task-id"}).ErrorMsg)
 	mockUnitHolder.On("Binlog").Return("", errors.New("error")).Once()
 	require.Equal(t, "error", dmWorker.BinlogTask(context.Background(), &dmpkg.BinlogTaskRequest{Task: "task-id"}).ErrorMsg)
 	mockUnitHolder.On("Binlog").Return("msg", nil).Once()
 	require.Equal(t, "msg", dmWorker.BinlogTask(context.Background(), &dmpkg.BinlogTaskRequest{Task: "task-id"}).Msg)
+}
+
+func TestBinlogSchema(t *testing.T) {
+	mockUnitHolder := &mockUnitHolder{}
+	dmWorker := &dmWorker{taskID: "task-id", unitHolder: mockUnitHolder}
+
+	require.Equal(t, "task id mismatch, get wrong-task-id, actually task-id", dmWorker.BinlogSchemaTask(context.Background(), &dmpkg.BinlogSchemaTaskRequest{Source: "wrong-task-id"}).ErrorMsg)
+	mockUnitHolder.On("BinlogSchema").Return("", errors.New("error")).Once()
+	require.Equal(t, "error", dmWorker.BinlogSchemaTask(context.Background(), &dmpkg.BinlogSchemaTaskRequest{Source: "task-id"}).ErrorMsg)
+	mockUnitHolder.On("BinlogSchema").Return("msg", nil).Once()
+	require.Equal(t, "msg", dmWorker.BinlogSchemaTask(context.Background(), &dmpkg.BinlogSchemaTaskRequest{Source: "task-id"}).Msg)
 }

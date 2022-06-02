@@ -177,6 +177,21 @@ func testSimpleAllModeTask(
 		return jobStatus.TaskStatus[source1].Status.Stage == metadata.StagePaused
 	}, time.Second*10, time.Second)
 
+	// binlog schema list
+	binlogSchemaReq := &dmpkg.BinlogSchemaRequest{
+		Op:      pb.SchemaOp_ListSchema,
+		Sources: []string{source1},
+	}
+	resp2, err = binlogSchema(ctx, client, resp.JobId, binlogSchemaReq, t)
+	require.NoError(t, err)
+	require.Nil(t, resp2.Err)
+	var binlogSchemaResp dmpkg.BinlogSchemaResponse
+	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogSchemaResp))
+	require.Equal(t, "", binlogSchemaResp.ErrorMsg)
+	require.Len(t, binlogSchemaResp.Results, 1)
+	require.Equal(t, fmt.Sprintf(`["%s"]`, db), binlogSchemaResp.Results[source1].Msg)
+	require.Equal(t, "", binlogSchemaResp.Results[source1].ErrorMsg)
+
 	// resume task
 	resp2, err = operateTask(ctx, client, resp.JobId, nil, dmpkg.Resume, t)
 	require.NoError(t, err)
@@ -203,7 +218,7 @@ func testSimpleAllModeTask(
 
 	// eventually error
 	require.Eventually(t, func() bool {
-		resp2, err = queryStatus(ctx, client, resp.JobIdStr, []string{source1}, t)
+		resp2, err = queryStatus(ctx, client, resp.JobId, []string{source1}, t)
 		require.NoError(t, err)
 		require.Nil(t, resp2.Err)
 		require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &jobStatus))
@@ -232,7 +247,7 @@ func testSimpleAllModeTask(
 	waitRow("new_col = 4")
 
 	// binlog replace again
-	resp2, err = binlog(ctx, client, resp.JobIdStr, binlogReq, t)
+	resp2, err = binlog(ctx, client, resp.JobId, binlogReq, t)
 	require.NoError(t, err)
 	require.Nil(t, resp2.Err)
 	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogResp))
@@ -280,4 +295,12 @@ func binlog(ctx context.Context, client client.MasterClient, jobID string, req *
 	jsonArg, err := json.Marshal(req)
 	require.NoError(t, err)
 	return client.DebugJob(ctx2, &enginepb.DebugJobRequest{JobId: jobID, Command: dmpkg.Binlog, JsonArg: string(jsonArg)})
+}
+
+func binlogSchema(ctx context.Context, client client.MasterClient, jobID string, req *dmpkg.BinlogSchemaRequest, t *testing.T) (*enginepb.DebugJobResponse, error) {
+	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	jsonArg, err := json.Marshal(req)
+	require.NoError(t, err)
+	return client.DebugJob(ctx2, &enginepb.DebugJobRequest{JobId: jobID, Command: dmpkg.BinlogSchema, JsonArg: string(jsonArg)})
 }

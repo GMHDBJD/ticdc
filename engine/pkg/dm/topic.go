@@ -24,14 +24,16 @@ import (
 
 // Defines topics here
 const (
-	OperateTask p2p.Topic = "OperateTask"
-	QueryStatus p2p.Topic = "QueryStatus"
-	StopWorker  p2p.Topic = "StopWorker"
-	GetJobCfg   p2p.Topic = "GetJobCfg"
-	Binlog      p2p.Topic = "Binlog"
+	OperateTask  p2p.Topic = "OperateTask"
+	QueryStatus  p2p.Topic = "QueryStatus"
+	StopWorker   p2p.Topic = "StopWorker"
+	GetJobCfg    p2p.Topic = "GetJobCfg"
+	Binlog       p2p.Topic = "Binlog"
+	BinlogSchema p2p.Topic = "BinlogSchema"
 
 	// internal
-	BinlogTask p2p.Topic = "BinlogTask"
+	BinlogTask       p2p.Topic = "BinlogTask"
+	BinlogSchemaTask p2p.Topic = "BinlogSchemaTask"
 )
 
 // OperateType represents internal operate type in DM
@@ -82,14 +84,27 @@ type BinlogRequest pb.HandleErrorRequest
 type BinlogResponse struct {
 	ErrorMsg string
 	// taskID -> task response
-	Results map[string]*BinlogTaskResponse
+	Results map[string]*CommonTaskResponse
 }
 
 // BinlogTaskRequest is binlog task request
 type BinlogTaskRequest pb.HandleWorkerErrorRequest
 
-// BinlogTaskResponse is binlog task response
-type BinlogTaskResponse struct {
+// BinlogSchemaRequest is binlog schema request
+type BinlogSchemaRequest pb.OperateSchemaRequest
+
+// BinlogSchemaResponse is binlog schema response
+type BinlogSchemaResponse struct {
+	ErrorMsg string
+	// taskID -> task response
+	Results map[string]*CommonTaskResponse
+}
+
+// BinlogSchemaTaskRequest is binlog schema task request
+type BinlogSchemaTaskRequest pb.OperateWorkerSchemaRequest
+
+// CommonTaskResponse is common task response
+type CommonTaskResponse struct {
 	ErrorMsg string
 	Msg      string
 }

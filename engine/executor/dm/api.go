@@ -71,13 +71,24 @@ func (w *dmWorker) OperateTask(ctx context.Context, msg *dmpkg.OperateTaskMessag
 }
 
 // BinlogTask implements the api of binlog task request.
-func (w *dmWorker) BinlogTask(ctx context.Context, req *dmpkg.BinlogTaskRequest) *dmpkg.BinlogTaskResponse {
-	if w.taskID != req.Task {
-		return &dmpkg.BinlogTaskResponse{ErrorMsg: fmt.Sprintf("task id mismatch, get %s, actually %s", req.Task, w.taskID)}
-	}
+// BinlogTask is called by refection of commandHandler.
+func (w *dmWorker) BinlogTask(ctx context.Context, req *dmpkg.BinlogTaskRequest) *dmpkg.CommonTaskResponse {
 	msg, err := w.unitHolder.Binlog(ctx, req)
 	if err != nil {
-		return &dmpkg.BinlogTaskResponse{ErrorMsg: err.Error()}
+		return &dmpkg.CommonTaskResponse{ErrorMsg: err.Error()}
 	}
-	return &dmpkg.BinlogTaskResponse{Msg: msg}
+	return &dmpkg.CommonTaskResponse{Msg: msg}
+}
+
+// BinlogSchemaTask implements the api of binlog schema request.
+// BinlogSchemaTask is called by refection of commandHandler.
+func (w *dmWorker) BinlogSchemaTask(ctx context.Context, req *dmpkg.BinlogSchemaTaskRequest) *dmpkg.CommonTaskResponse {
+	if w.taskID != req.Source {
+		return &dmpkg.CommonTaskResponse{ErrorMsg: fmt.Sprintf("task id mismatch, get %s, actually %s", req.Source, w.taskID)}
+	}
+	msg, err := w.unitHolder.BinlogSchema(ctx, req)
+	if err != nil {
+		return &dmpkg.CommonTaskResponse{ErrorMsg: err.Error()}
+	}
+	return &dmpkg.CommonTaskResponse{Msg: msg}
 }

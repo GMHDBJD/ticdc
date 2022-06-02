@@ -38,6 +38,7 @@ type unitHolder interface {
 	Stage() (metadata.TaskStage, *pb.ProcessResult)
 	Status(ctx context.Context) interface{}
 	Binlog(ctx context.Context, req *dmpkg.BinlogTaskRequest) (string, error)
+	BinlogSchema(ctx context.Context, req *dmpkg.BinlogSchemaTaskRequest) (string, error)
 }
 
 // unitHolderImpl wrap the dm-worker unit.
@@ -204,6 +205,21 @@ func (u *unitHolderImpl) Binlog(ctx context.Context, req *dmpkg.BinlogTaskReques
 		err = u.Resume(ctx)
 	}
 	return msg, err
+}
+
+// BinlogSchema implements the binlog schema api.
+func (u *unitHolderImpl) BinlogSchema(ctx context.Context, req *dmpkg.BinlogSchemaTaskRequest) (string, error) {
+	syncUnit, ok := u.unit.(*syncer.Syncer)
+	if !ok {
+		return "", errors.Errorf("such operation is only available for syncer. current unit is %s", u.unit.Type())
+	}
+
+	stage, _ := u.Stage()
+	if (stage != metadata.StagePaused && stage != metadata.StageError) && req.Op != pb.SchemaOp_ListMigrateTargets {
+		return "", errors.Errorf("current stage is %d but not paused, invalid", stage)
+	}
+
+	return syncUnit.OperateSchema(ctx, (*pb.OperateWorkerSchemaRequest)(req))
 }
 
 func filterErrors(r *pb.ProcessResult) {

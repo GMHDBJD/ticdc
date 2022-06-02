@@ -327,7 +327,7 @@ func TestBinlog(t *testing.T) {
 	require.EqualError(t, err, "state not found")
 	require.Nil(t, resp)
 
-	messageAgent.On("SendRequest").Return(&dmpkg.BinlogTaskResponse{Msg: "msg"}, nil).Once()
+	messageAgent.On("SendRequest").Return(&dmpkg.CommonTaskResponse{Msg: "msg"}, nil).Once()
 	messageAgent.On("SendRequest").Return(nil, errors.New("error")).Once()
 	job := metadata.NewJob(&config.JobCfg{Upstreams: []*config.UpstreamCfg{
 		{MySQLInstance: dmconfig.MySQLInstance{SourceID: "task1"}},
@@ -346,7 +346,7 @@ func TestBinlog(t *testing.T) {
 	req := dmpkg.BinlogRequest{Sources: []string{"task1"}}
 	jsonArg, err := json.Marshal(req)
 	require.NoError(t, err)
-	messageAgent.On("SendRequest").Return(&dmpkg.BinlogTaskResponse{Msg: "msg"}, nil).Once()
+	messageAgent.On("SendRequest").Return(&dmpkg.CommonTaskResponse{Msg: "msg"}, nil).Once()
 	resp2 := jm.DebugJob(context.Background(), &enginepb.DebugJobRequest{Command: dmpkg.Binlog, JsonArg: string(jsonArg)})
 	require.NoError(t, err)
 	var binlogResp dmpkg.BinlogResponse
@@ -355,6 +355,38 @@ func TestBinlog(t *testing.T) {
 	require.Len(t, binlogResp.Results, 1)
 	require.Equal(t, "", binlogResp.Results["task1"].ErrorMsg)
 	require.Equal(t, "msg", binlogResp.Results["task1"].Msg)
+}
+
+func TestBinlogSchema(t *testing.T) {
+	messageAgent := &dmpkg.MockMessageAgent{}
+	jm := &JobMaster{
+		messageAgent: messageAgent,
+	}
+	resp := jm.BinlogSchema(context.Background(), &dmpkg.BinlogSchemaRequest{})
+	require.Equal(t, "must specify at least one source", resp.ErrorMsg)
+
+	messageAgent.On("SendRequest").Return(&dmpkg.CommonTaskResponse{Msg: "msg"}, nil).Once()
+	messageAgent.On("SendRequest").Return(nil, errors.New("error")).Once()
+	resp = jm.BinlogSchema(context.Background(), &dmpkg.BinlogSchemaRequest{Sources: []string{"task1", "task2"}})
+	require.Equal(t, "", resp.ErrorMsg)
+	errMsg := resp.Results["task1"].ErrorMsg + resp.Results["task2"].ErrorMsg
+	msg := resp.Results["task1"].Msg + resp.Results["task2"].Msg
+	require.Equal(t, "error", errMsg)
+	require.Equal(t, "msg", msg)
+
+	// test with DebugJob
+	req := dmpkg.BinlogSchemaRequest{Sources: []string{"task1"}}
+	jsonArg, err := json.Marshal(req)
+	require.NoError(t, err)
+	messageAgent.On("SendRequest").Return(&dmpkg.CommonTaskResponse{Msg: "msg"}, nil).Once()
+	resp2 := jm.DebugJob(context.Background(), &enginepb.DebugJobRequest{Command: dmpkg.BinlogSchema, JsonArg: string(jsonArg)})
+	require.NoError(t, err)
+	var binlogSchemaResp dmpkg.BinlogSchemaResponse
+	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogSchemaResp))
+	require.Equal(t, "", binlogSchemaResp.ErrorMsg)
+	require.Len(t, binlogSchemaResp.Results, 1)
+	require.Equal(t, "", binlogSchemaResp.Results["task1"].ErrorMsg)
+	require.Equal(t, "msg", binlogSchemaResp.Results["task1"].Msg)
 }
 
 func sortString(w string) string {

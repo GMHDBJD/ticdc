@@ -166,7 +166,7 @@ func (jm *JobMaster) Binlog(ctx context.Context, req *dmpkg.BinlogRequest) (*dmp
 		wg         sync.WaitGroup
 		mu         sync.Mutex
 		binlogResp = &dmpkg.BinlogResponse{
-			Results: make(map[string]*dmpkg.BinlogTaskResponse, len(req.Sources)),
+			Results: make(map[string]*dmpkg.CommonTaskResponse, len(req.Sources)),
 		}
 	)
 	for _, task := range req.Sources {
@@ -176,7 +176,6 @@ func (jm *JobMaster) Binlog(ctx context.Context, req *dmpkg.BinlogRequest) (*dmp
 			defer wg.Done()
 			req := &dmpkg.BinlogTaskRequest{
 				Op:        req.Op,
-				Task:      taskID,
 				BinlogPos: req.BinlogPos,
 				Sqls:      req.Sqls,
 			}
@@ -190,14 +189,63 @@ func (jm *JobMaster) Binlog(ctx context.Context, req *dmpkg.BinlogRequest) (*dmp
 	return binlogResp, nil
 }
 
-// Binlog implements the api of binlog request.
-func (jm *JobMaster) BinlogTask(ctx context.Context, taskID string, req *dmpkg.BinlogTaskRequest) *dmpkg.BinlogTaskResponse {
+// BinlogTask implements the api of binlog task request.
+func (jm *JobMaster) BinlogTask(ctx context.Context, taskID string, req *dmpkg.BinlogTaskRequest) *dmpkg.CommonTaskResponse {
 	// TODO: we may check the workerType via TaskManager/WorkerManger to reduce request connection.
 	resp, err := jm.messageAgent.SendRequest(ctx, taskID, dmpkg.BinlogTask, req)
 	if err != nil {
-		return &dmpkg.BinlogTaskResponse{ErrorMsg: err.Error()}
+		return &dmpkg.CommonTaskResponse{ErrorMsg: err.Error()}
 	}
-	return resp.(*dmpkg.BinlogTaskResponse)
+	return resp.(*dmpkg.CommonTaskResponse)
+}
+
+// BinlogSchema implements the api of binlog schema request.
+func (jm *JobMaster) BinlogSchema(ctx context.Context, req *dmpkg.BinlogSchemaRequest) *dmpkg.BinlogSchemaResponse {
+	if len(req.Sources) == 0 {
+		return &dmpkg.BinlogSchemaResponse{ErrorMsg: "must specify at least one source"}
+	}
+
+	var (
+		mu                   sync.Mutex
+		wg                   sync.WaitGroup
+		binlogSchemaResponse = &dmpkg.BinlogSchemaResponse{
+			Results: make(map[string]*dmpkg.CommonTaskResponse, len(req.Sources)),
+		}
+	)
+	for _, task := range req.Sources {
+		taskID := task
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := &dmpkg.BinlogSchemaTaskRequest{
+				Op:         req.Op,
+				Source:     taskID,
+				Database:   req.Database,
+				Table:      req.Table,
+				Schema:     req.Schema,
+				Flush:      req.Flush,
+				Sync:       req.Sync,
+				FromSource: req.FromSource,
+				FromTarget: req.FromTarget,
+			}
+			resp := jm.BinlogSchemaTask(ctx, taskID, req)
+			mu.Lock()
+			binlogSchemaResponse.Results[taskID] = resp
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return binlogSchemaResponse
+}
+
+// BinlogSchemaTask implements the api of binlog schema task request.
+func (jm *JobMaster) BinlogSchemaTask(ctx context.Context, taskID string, req *dmpkg.BinlogSchemaTaskRequest) *dmpkg.CommonTaskResponse {
+	// TODO: we may check the workerType via TaskManager/WorkerManger to reduce request connection.
+	resp, err := jm.messageAgent.SendRequest(ctx, taskID, dmpkg.BinlogSchemaTask, req)
+	if err != nil {
+		return &dmpkg.CommonTaskResponse{ErrorMsg: err.Error()}
+	}
+	return resp.(*dmpkg.CommonTaskResponse)
 }
 
 // DebugJob debugs job.
@@ -241,6 +289,15 @@ func (jm *JobMaster) DebugJob(ctx context.Context, req *pb.DebugJobRequest) *pb.
 			}}
 		}
 		resp, err = jm.Binlog(ctx, &binlogReq)
+	case dmpkg.BinlogSchema:
+		var binlogSchemaReq dmpkg.BinlogSchemaRequest
+		if err := json.Unmarshal([]byte(req.JsonArg), &binlogSchemaReq); err != nil {
+			return &pb.DebugJobResponse{Err: &pb.Error{
+				Code:    pb.ErrorCode_UnknownError,
+				Message: err.Error(),
+			}}
+		}
+		resp = jm.BinlogSchema(ctx, &binlogSchemaReq)
 	default:
 	}
 
