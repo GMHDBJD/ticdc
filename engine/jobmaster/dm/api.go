@@ -149,6 +149,57 @@ func (jm *JobMaster) GetJobCfg(ctx context.Context) (*config.JobCfg, error) {
 	return config.FromTaskCfgs(taskCfgs), nil
 }
 
+// Binlog implements the api of binlog request.
+func (jm *JobMaster) Binlog(ctx context.Context, req *dmpkg.BinlogRequest) (*dmpkg.BinlogResponse, error) {
+	if len(req.Sources) == 0 {
+		state, err := jm.metadata.JobStore().Get(ctx)
+		if err != nil {
+			return nil, err
+		}
+		job := state.(*metadata.Job)
+		for task := range job.Tasks {
+			req.Sources = append(req.Sources, task)
+		}
+	}
+
+	var (
+		wg         sync.WaitGroup
+		mu         sync.Mutex
+		binlogResp = &dmpkg.BinlogResponse{
+			Results: make(map[string]*dmpkg.BinlogTaskResponse, len(req.Sources)),
+		}
+	)
+	for _, task := range req.Sources {
+		taskID := task
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := &dmpkg.BinlogTaskRequest{
+				Op:        req.Op,
+				Task:      taskID,
+				BinlogPos: req.BinlogPos,
+				Sqls:      req.Sqls,
+			}
+			resp := jm.BinlogTask(ctx, taskID, req)
+			mu.Lock()
+			binlogResp.Results[taskID] = resp
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	return binlogResp, nil
+}
+
+// Binlog implements the api of binlog request.
+func (jm *JobMaster) BinlogTask(ctx context.Context, taskID string, req *dmpkg.BinlogTaskRequest) *dmpkg.BinlogTaskResponse {
+	// TODO: we may check the workerType via TaskManager/WorkerManger to reduce request connection.
+	resp, err := jm.messageAgent.SendRequest(ctx, taskID, dmpkg.BinlogTask, req)
+	if err != nil {
+		return &dmpkg.BinlogTaskResponse{ErrorMsg: err.Error()}
+	}
+	return resp.(*dmpkg.BinlogTaskResponse)
+}
+
 // DebugJob debugs job.
 func (jm *JobMaster) DebugJob(ctx context.Context, req *pb.DebugJobRequest) *pb.DebugJobResponse {
 	var (
@@ -179,8 +230,17 @@ func (jm *JobMaster) DebugJob(ctx context.Context, req *pb.DebugJobRequest) *pb.
 			}}
 		}
 		err = jm.OperateTask(ctx, jsonArg.Op, nil, jsonArg.Tasks)
-	case dmpkg.GetTaskCfg:
+	case dmpkg.GetJobCfg:
 		resp, err = jm.GetJobCfg(ctx)
+	case dmpkg.Binlog:
+		var binlogReq dmpkg.BinlogRequest
+		if err := json.Unmarshal([]byte(req.JsonArg), &binlogReq); err != nil {
+			return &pb.DebugJobResponse{Err: &pb.Error{
+				Code:    pb.ErrorCode_UnknownError,
+				Message: err.Error(),
+			}}
+		}
+		resp, err = jm.Binlog(ctx, &binlogReq)
 	default:
 	}
 

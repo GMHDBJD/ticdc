@@ -27,7 +27,11 @@ const (
 	OperateTask p2p.Topic = "OperateTask"
 	QueryStatus p2p.Topic = "QueryStatus"
 	StopWorker  p2p.Topic = "StopWorker"
-	GetTaskCfg  p2p.Topic = "GetTaskCfg"
+	GetJobCfg   p2p.Topic = "GetJobCfg"
+	Binlog      p2p.Topic = "Binlog"
+
+	// internal
+	BinlogTask p2p.Topic = "BinlogTask"
 )
 
 // OperateType represents internal operate type in DM
@@ -69,4 +73,23 @@ type QueryStatusResponse struct {
 	Stage    metadata.TaskStage
 	Result   *pb.ProcessResult
 	Status   json.RawMessage
+}
+
+// BinlogRequest is binlog request
+type BinlogRequest pb.HandleErrorRequest
+
+// BinlogResponse is binlog response
+type BinlogResponse struct {
+	ErrorMsg string
+	// taskID -> task response
+	Results map[string]*BinlogTaskResponse
+}
+
+// BinlogTaskRequest is binlog task request
+type BinlogTaskRequest pb.HandleWorkerErrorRequest
+
+// BinlogTaskResponse is binlog task response
+type BinlogTaskResponse struct {
+	ErrorMsg string
+	Msg      string
 }

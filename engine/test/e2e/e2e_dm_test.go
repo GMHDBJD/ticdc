@@ -24,11 +24,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pingcap/tiflow/dm/dm/pb"
 	"github.com/pingcap/tiflow/tests/integration_tests/util"
 	"github.com/stretchr/testify/require"
 
 	"github.com/pingcap/tiflow/engine/client"
-	pb "github.com/pingcap/tiflow/engine/enginepb"
+	"github.com/pingcap/tiflow/engine/enginepb"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	dmpkg "github.com/pingcap/tiflow/engine/pkg/dm"
@@ -104,10 +105,10 @@ func testSimpleAllModeTask(
 	dmJobCfg, err := ioutil.ReadFile("./dm-job.yaml")
 	require.NoError(t, err)
 	dmJobCfg = bytes.ReplaceAll(dmJobCfg, []byte("<placeholder>"), []byte(db))
-	var resp *pb.SubmitJobResponse
+	var resp *enginepb.SubmitJobResponse
 	require.Eventually(t, func() bool {
-		resp, err = client.SubmitJob(ctx, &pb.SubmitJobRequest{
-			Tp:     pb.JobType_DM,
+		resp, err = client.SubmitJob(ctx, &enginepb.SubmitJobRequest{
+			Tp:     enginepb.JobType_DM,
 			Config: dmJobCfg,
 		})
 		return err == nil && resp.Err == nil
@@ -191,13 +192,26 @@ func testSimpleAllModeTask(
 	}, time.Second*10, time.Second)
 
 	// get job cfg
-	resp2, err = getJobCfg(ctx, client, resp.JobIdStr, t)
+	resp2, err = getJobCfg(ctx, client, resp.JobId, t)
 	require.NoError(t, err)
 	require.Nil(t, resp2.Err)
 	require.Contains(t, resp2.JsonRet, `"flavor":"mysql"`)
+
+	binlogReq := &dmpkg.BinlogRequest{
+		Op: pb.ErrorOp_List,
+	}
+	resp2, err = binlog(ctx, client, resp.JobId, binlogReq, t)
+	require.NoError(t, err)
+	require.Nil(t, resp2.Err)
+	var binlogResp dmpkg.BinlogResponse
+	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogResp))
+	require.Equal(t, "", binlogResp.ErrorMsg)
+	require.Len(t, binlogResp.Results, 1)
+	require.Equal(t, binlogResp.Results[source1].ErrorMsg, "")
+	require.Equal(t, binlogResp.Results[source1].Msg, "")
 }
 
-func queryStatus(ctx context.Context, client client.MasterClient, jobID string, tasks []string, t *testing.T) (*pb.DebugJobResponse, error) {
+func queryStatus(ctx context.Context, client client.MasterClient, jobID string, tasks []string, t *testing.T) (*enginepb.DebugJobResponse, error) {
 	var args struct {
 		Tasks []string
 	}
@@ -206,10 +220,10 @@ func queryStatus(ctx context.Context, client client.MasterClient, jobID string, 
 	require.NoError(t, err)
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return client.DebugJob(ctx2, &pb.DebugJobRequest{JobId: jobID, Command: dmpkg.QueryStatus, JsonArg: string(jsonArg)})
+	return client.DebugJob(ctx2, &enginepb.DebugJobRequest{JobId: jobID, Command: dmpkg.QueryStatus, JsonArg: string(jsonArg)})
 }
 
-func operateTask(ctx context.Context, client client.MasterClient, jobID string, tasks []string, op dmpkg.OperateType, t *testing.T) (*pb.DebugJobResponse, error) {
+func operateTask(ctx context.Context, client client.MasterClient, jobID string, tasks []string, op dmpkg.OperateType, t *testing.T) (*enginepb.DebugJobResponse, error) {
 	var args struct {
 		Tasks []string
 		Op    dmpkg.OperateType
@@ -220,11 +234,19 @@ func operateTask(ctx context.Context, client client.MasterClient, jobID string, 
 	require.NoError(t, err)
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return client.DebugJob(ctx2, &pb.DebugJobRequest{JobId: jobID, Command: dmpkg.OperateTask, JsonArg: string(jsonArg)})
+	return client.DebugJob(ctx2, &enginepb.DebugJobRequest{JobId: jobID, Command: dmpkg.OperateTask, JsonArg: string(jsonArg)})
 }
 
-func getJobCfg(ctx context.Context, client client.MasterClient, jobID string, t *testing.T) (*pb.DebugJobResponse, error) {
+func getJobCfg(ctx context.Context, client client.MasterClient, jobID string, t *testing.T) (*enginepb.DebugJobResponse, error) {
 	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	return client.DebugJob(ctx2, &pb.DebugJobRequest{JobIdStr: jobID, Command: dmpkg.GetTaskCfg})
+	return client.DebugJob(ctx2, &enginepb.DebugJobRequest{JobId: jobID, Command: dmpkg.GetJobCfg})
+}
+
+func binlog(ctx context.Context, client client.MasterClient, jobID string, req *dmpkg.BinlogRequest, t *testing.T) (*enginepb.DebugJobResponse, error) {
+	ctx2, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	jsonArg, err := json.Marshal(req)
+	require.NoError(t, err)
+	return client.DebugJob(ctx2, &enginepb.DebugJobRequest{JobId: jobID, Command: dmpkg.Binlog, JsonArg: string(jsonArg)})
 }

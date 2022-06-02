@@ -26,6 +26,7 @@ import (
 	"github.com/pingcap/tiflow/dm/syncer"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	"github.com/pingcap/tiflow/engine/lib"
+	dmpkg "github.com/pingcap/tiflow/engine/pkg/dm"
 )
 
 // unitHolder hold a unit of DM
@@ -36,6 +37,7 @@ type unitHolder interface {
 	Resume(ctx context.Context) error
 	Stage() (metadata.TaskStage, *pb.ProcessResult)
 	Status(ctx context.Context) interface{}
+	Binlog(ctx context.Context, req *dmpkg.BinlogTaskRequest) (string, error)
 }
 
 // unitHolderImpl wrap the dm-worker unit.
@@ -183,6 +185,25 @@ func (u *unitHolderImpl) Stage() (metadata.TaskStage, *pb.ProcessResult) {
 // Status implement UnitHolder.Status
 func (u *unitHolderImpl) Status(ctx context.Context) interface{} {
 	return u.unit.Status(nil)
+}
+
+// Binlog implements the binlog api for syncer unit.
+func (u *unitHolderImpl) Binlog(ctx context.Context, req *dmpkg.BinlogTaskRequest) (string, error) {
+	syncUnit, ok := u.unit.(*syncer.Syncer)
+	if !ok {
+		return "", errors.Errorf("such operation is only available for syncer. current unit is %s", u.unit.Type())
+	}
+
+	msg, err := syncUnit.HandleError(ctx, (*pb.HandleWorkerErrorRequest)(req))
+	if err != nil {
+		return "", err
+	}
+
+	stage, _ := u.Stage()
+	if stage == metadata.StagePaused && req.Op != pb.ErrorOp_List {
+		err = u.Resume(ctx)
+	}
+	return msg, err
 }
 
 func filterErrors(r *pb.ProcessResult) {

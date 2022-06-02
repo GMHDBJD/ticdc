@@ -22,6 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pingcap/errors"
+	dmconfig "github.com/pingcap/tiflow/dm/dm/config"
 	"github.com/pingcap/tiflow/dm/dm/pb"
 	"github.com/pingcap/tiflow/engine/enginepb"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/config"
@@ -307,6 +309,52 @@ func TestGetJobCfg(t *testing.T) {
 	jobCfg, err = jm.GetJobCfg(context.Background())
 	require.NoError(t, err)
 	require.Equal(t, "job-id", jobCfg.Name)
+
+	// test with DebugJob
+	resp := jm.DebugJob(context.Background(), &enginepb.DebugJobRequest{Command: dmpkg.GetJobCfg})
+	require.NoError(t, err)
+	require.Contains(t, resp.JsonRet, jobCfg.Name)
+}
+
+func TestBinlog(t *testing.T) {
+	kvClient := kvmock.NewMetaMock()
+	messageAgent := &dmpkg.MockMessageAgent{}
+	jm := &JobMaster{
+		metadata:     metadata.NewMetaData("master-id", kvClient),
+		messageAgent: messageAgent,
+	}
+	resp, err := jm.Binlog(context.Background(), &dmpkg.BinlogRequest{})
+	require.EqualError(t, err, "state not found")
+	require.Nil(t, resp)
+
+	messageAgent.On("SendRequest").Return(&dmpkg.BinlogTaskResponse{Msg: "msg"}, nil).Once()
+	messageAgent.On("SendRequest").Return(nil, errors.New("error")).Once()
+	job := metadata.NewJob(&config.JobCfg{Upstreams: []*config.UpstreamCfg{
+		{MySQLInstance: dmconfig.MySQLInstance{SourceID: "task1"}},
+		{MySQLInstance: dmconfig.MySQLInstance{SourceID: "task2"}},
+	}})
+	jm.metadata.JobStore().Put(context.Background(), job)
+	resp, err = jm.Binlog(context.Background(), &dmpkg.BinlogRequest{})
+	require.Nil(t, err)
+	require.Equal(t, "", resp.ErrorMsg)
+	errMsg := resp.Results["task1"].ErrorMsg + resp.Results["task2"].ErrorMsg
+	msg := resp.Results["task1"].Msg + resp.Results["task2"].Msg
+	require.Equal(t, "error", errMsg)
+	require.Equal(t, "msg", msg)
+
+	// test with DebugJob
+	req := dmpkg.BinlogRequest{Sources: []string{"task1"}}
+	jsonArg, err := json.Marshal(req)
+	require.NoError(t, err)
+	messageAgent.On("SendRequest").Return(&dmpkg.BinlogTaskResponse{Msg: "msg"}, nil).Once()
+	resp2 := jm.DebugJob(context.Background(), &enginepb.DebugJobRequest{Command: dmpkg.Binlog, JsonArg: string(jsonArg)})
+	require.NoError(t, err)
+	var binlogResp dmpkg.BinlogResponse
+	require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &binlogResp))
+	require.Equal(t, "", binlogResp.ErrorMsg)
+	require.Len(t, binlogResp.Results, 1)
+	require.Equal(t, "", binlogResp.Results["task1"].ErrorMsg)
+	require.Equal(t, "msg", binlogResp.Results["task1"].Msg)
 }
 
 func sortString(w string) string {

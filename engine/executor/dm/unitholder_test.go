@@ -29,6 +29,7 @@ import (
 	"github.com/pingcap/tiflow/dm/syncer"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	"github.com/pingcap/tiflow/engine/lib"
+	dmpkg "github.com/pingcap/tiflow/engine/pkg/dm"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -98,6 +99,12 @@ func TestUnitHolder(t *testing.T) {
 	require.Equal(t, metadata.StageRunning, stage)
 	// resume again
 	require.Error(t, unitHolder.Resume(context.Background()))
+
+	// test Binlog api
+	u.On("Type").Return(pb.UnitType_Dump).Once()
+	msg, err := unitHolder.Binlog(context.Background(), &dmpkg.BinlogTaskRequest{})
+	require.Error(t, err)
+	require.Equal(t, "", msg)
 
 	// mock finished
 	time.Sleep(time.Second)
@@ -220,4 +227,12 @@ func (m *mockUnitHolder) Status(ctx context.Context) interface{} {
 	defer m.Unlock()
 	args := m.Called()
 	return args.Get(0)
+}
+
+// Binlog implement Holder.Binlog
+func (m *mockUnitHolder) Binlog(ctx context.Context, req *dmpkg.BinlogTaskRequest) (string, error) {
+	m.Lock()
+	defer m.Unlock()
+	args := m.Called()
+	return args.Get(0).(string), args.Error(1)
 }
