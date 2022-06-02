@@ -62,6 +62,15 @@ func TestQueryStatusAPI(t *testing.T) {
 			BlockDDLOwner:       "",
 			ConflictMsg:         "",
 		}
+		processError = &pb.ProcessError{
+			ErrCode:    1,
+			ErrClass:   "class",
+			ErrScope:   "scope",
+			ErrLevel:   "low",
+			Message:    "msg",
+			RawCause:   "raw cause",
+			Workaround: "workaround",
+		}
 		dumpStatusBytes, _ = json.Marshal(dumpStatus)
 		loadStatusBytes, _ = json.Marshal(loadStatus)
 		syncStatusBytes, _ = json.Marshal(syncStatus)
@@ -73,11 +82,13 @@ func TestQueryStatusAPI(t *testing.T) {
 		loadStatusResp = &dmpkg.QueryStatusResponse{
 			Unit:   lib.WorkerDMLoad,
 			Stage:  metadata.StageFinished,
+			Result: &pb.ProcessResult{IsCanceled: false},
 			Status: loadStatusBytes,
 		}
 		syncStatusResp = &dmpkg.QueryStatusResponse{
 			Unit:   lib.WorkerDMSync,
 			Stage:  metadata.StagePaused,
+			Result: &pb.ProcessResult{Errors: []*pb.ProcessError{processError}},
 			Status: syncStatusBytes,
 		}
 	)
@@ -97,21 +108,21 @@ func TestQueryStatusAPI(t *testing.T) {
 		fmt.Sprintf("task id mismatch, get %s, actually %s", "wrong-task-id", "task-id"))
 
 	unitHolder.On("Status").Return(dumpStatus).Once()
-	dmWorker.setStage(metadata.StageRunning)
+	unitHolder.On("Stage").Return(metadata.StageRunning, nil).Once()
 	resp := dmWorker.QueryStatus(context.Background(), &dmpkg.QueryStatusRequest{Task: "task-id"})
 	require.Equal(t, "", resp.ErrorMsg)
 	require.Equal(t, dumpStatusResp, resp)
 
 	unitHolder.On("Status").Return(loadStatus).Once()
+	unitHolder.On("Stage").Return(metadata.StageFinished, &pb.ProcessResult{IsCanceled: false}).Once()
 	dmWorker.workerType = lib.WorkerDMLoad
-	dmWorker.setStage(metadata.StageFinished)
 	resp = dmWorker.QueryStatus(context.Background(), &dmpkg.QueryStatusRequest{Task: "task-id"})
 	require.Equal(t, "", resp.ErrorMsg)
 	require.Equal(t, loadStatusResp, resp)
 
 	unitHolder.On("Status").Return(syncStatus).Once()
+	unitHolder.On("Stage").Return(metadata.StagePaused, &pb.ProcessResult{Errors: []*pb.ProcessError{processError}}).Once()
 	dmWorker.workerType = lib.WorkerDMSync
-	dmWorker.setStage(metadata.StagePaused)
 	resp = dmWorker.QueryStatus(context.Background(), &dmpkg.QueryStatusRequest{Task: "task-id"})
 	require.Equal(t, "", resp.ErrorMsg)
 	require.Equal(t, syncStatusResp, resp)

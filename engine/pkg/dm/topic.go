@@ -16,6 +16,7 @@ package dm
 import (
 	"encoding/json"
 
+	"github.com/pingcap/tiflow/dm/dm/pb"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	libModel "github.com/pingcap/tiflow/engine/lib/model"
 	"github.com/pingcap/tiflow/engine/pkg/p2p"
@@ -65,5 +66,6 @@ type QueryStatusResponse struct {
 	ErrorMsg string
 	Unit     libModel.WorkerType
 	Stage    metadata.TaskStage
+	Result   *pb.ProcessResult
 	Status   json.RawMessage
 }

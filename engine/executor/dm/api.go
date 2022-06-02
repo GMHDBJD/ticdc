@@ -31,6 +31,7 @@ func (w *dmWorker) QueryStatus(ctx context.Context, req *dmpkg.QueryStatusReques
 	}
 	// get status from unit
 	status := w.unitHolder.Status(ctx)
+	stage, result := w.unitHolder.Stage()
 	// copy status via json
 	statusBytes, err := json.Marshal(status)
 	if err != nil {
@@ -38,7 +39,8 @@ func (w *dmWorker) QueryStatus(ctx context.Context, req *dmpkg.QueryStatusReques
 	}
 	return &dmpkg.QueryStatusResponse{
 		Unit:   w.workerType,
-		Stage:  w.getStage(),
+		Stage:  stage,
+		Result: result,
 		Status: statusBytes,
 	}
 }

@@ -20,7 +20,6 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tiflow/dm/dm/config"
 	dmconfig "github.com/pingcap/tiflow/dm/dm/config"
 	"github.com/pingcap/tiflow/dm/dm/pb"
 	"github.com/pingcap/tiflow/dm/dm/worker"
@@ -92,7 +91,7 @@ type dmWorker struct {
 func newDMWorker(ctx *dcontext.Context, masterID libModel.MasterID, workerType lib.WorkerType, cfg *dmconfig.SubTaskConfig) *dmWorker {
 	// TODO: support config later
 	// nolint:errcheck
-	bf, _ := backoff.NewBackoff(config.DefaultBackoffFactor, config.DefaultBackoffJitter, config.DefaultBackoffMin, config.DefaultBackoffMax)
+	bf, _ := backoff.NewBackoff(dmconfig.DefaultBackoffFactor, dmconfig.DefaultBackoffJitter, dmconfig.DefaultBackoffMin, dmconfig.DefaultBackoffMax)
 	autoResume := &worker.AutoResumeInfo{Backoff: bf, LatestPausedTime: time.Now(), LatestResumeTime: time.Now()}
 	w := &dmWorker{
 		cfg:        cfg,
@@ -269,7 +268,7 @@ func (w *dmWorker) checkAndAutoResume(ctx context.Context) error {
 		Stage:  pb.Stage_Paused,
 		Result: result,
 	}
-	strategy := w.autoResume.CheckResumeSubtask(subtaskStage, config.DefaultBackoffRollback)
+	strategy := w.autoResume.CheckResumeSubtask(subtaskStage, dmconfig.DefaultBackoffRollback)
 	log.L().Info("got auto resume strategy", zap.String("task-id", w.taskID), zap.Stringer("strategy", strategy))
 
 	if strategy == worker.ResumeDispatch {

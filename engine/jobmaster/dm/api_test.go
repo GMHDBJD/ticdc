@@ -85,12 +85,21 @@ func TestQueryStatusAPI(t *testing.T) {
 			BlockDDLOwner:       "",
 			ConflictMsg:         "",
 		}
+		processError = &pb.ProcessError{
+			ErrCode:    1,
+			ErrClass:   "class",
+			ErrScope:   "scope",
+			ErrLevel:   "low",
+			Message:    "msg",
+			RawCause:   "raw cause",
+			Workaround: "workaround",
+		}
 		dumpStatusBytes, _ = json.Marshal(dumpStatus)
 		loadStatusBytes, _ = json.Marshal(loadStatus)
 		syncStatusBytes, _ = json.Marshal(syncStatus)
-		dumpStatusResp     = &dmpkg.QueryStatusResponse{Unit: lib.WorkerDMDump, Status: dumpStatusBytes}
-		loadStatusResp     = &dmpkg.QueryStatusResponse{Unit: lib.WorkerDMLoad, Status: loadStatusBytes}
-		syncStatusResp     = &dmpkg.QueryStatusResponse{Unit: lib.WorkerDMSync, Status: syncStatusBytes}
+		dumpStatusResp     = &dmpkg.QueryStatusResponse{Unit: lib.WorkerDMDump, Stage: metadata.StageRunning, Status: dumpStatusBytes}
+		loadStatusResp     = &dmpkg.QueryStatusResponse{Unit: lib.WorkerDMLoad, Stage: metadata.StagePaused, Result: &pb.ProcessResult{IsCanceled: true}, Status: loadStatusBytes}
+		syncStatusResp     = &dmpkg.QueryStatusResponse{Unit: lib.WorkerDMSync, Stage: metadata.StageError, Result: &pb.ProcessResult{Errors: []*pb.ProcessError{processError}}, Status: syncStatusBytes}
 	)
 	messageAgent := &dmpkg.MockMessageAgent{}
 	jm.messageAgent = messageAgent
@@ -138,6 +147,7 @@ func TestQueryStatusAPI(t *testing.T) {
 				"ErrorMsg": "worker for task task1 not found",
 				"Unit": 0,
 				"Stage": 0,
+				"Result": null,
 				"Status": null
 			}
 		},
@@ -148,6 +158,7 @@ func TestQueryStatusAPI(t *testing.T) {
 				"ErrorMsg": "",
 				"Unit": 11,
 				"Stage": 4,
+				"Result": null,
 				"Status": null
 			}
 		},
@@ -158,6 +169,7 @@ func TestQueryStatusAPI(t *testing.T) {
 				"ErrorMsg": "context deadline exceeded",
 				"Unit": 0,
 				"Stage": 0,
+				"Result": null,
 				"Status": null
 			}
 		},
@@ -167,7 +179,8 @@ func TestQueryStatusAPI(t *testing.T) {
 			"Status": {
 				"ErrorMsg": "",
 				"Unit": 10,
-				"Stage": 0,
+				"Stage": 2,
+				"Result": null,
 				"Status": {
 					"totalTables": 10,
 					"completedTables": 1,
@@ -183,7 +196,10 @@ func TestQueryStatusAPI(t *testing.T) {
 			"Status": {
 				"ErrorMsg": "",
 				"Unit": 11,
-				"Stage": 0,
+				"Stage": 3,
+				"Result": {
+					"isCanceled": true
+				},
 				"Status": {
 					"finishedBytes": 4,
 					"totalBytes": 100,
@@ -199,7 +215,20 @@ func TestQueryStatusAPI(t *testing.T) {
 			"Status": {
 				"ErrorMsg": "",
 				"Unit": 12,
-				"Stage": 0,
+				"Stage": 5,
+				"Result": {
+					"errors": [
+						{
+							"ErrCode": 1,
+							"ErrClass": "class",
+							"ErrScope": "scope",
+							"ErrLevel": "low",
+							"Message": "msg",
+							"RawCause": "raw cause",
+							"Workaround": "workaround"
+						}
+					]
+				},
 				"Status": {
 					"totalEvents": 10,
 					"totalTps": 10,
