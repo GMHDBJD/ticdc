@@ -188,8 +188,11 @@ func (jm *JobMaster) onWorkerFinished(taskStatus runtime.TaskStatus, worker lib.
 
 // OnWorkerStatusUpdated implements JobMasterImpl.OnWorkerStatusUpdated
 func (jm *JobMaster) OnWorkerStatusUpdated(worker lib.WorkerHandle, newStatus *libModel.WorkerStatus) error {
-	// No need to do anything here, because we update it in OnWorkerOnline
-	return nil
+	if newStatus.Code == libModel.WorkerStatusFinished || len(newStatus.ExtBytes) == 0 {
+		return nil
+	}
+	log.L().Debug("on worker status updated", zap.String("extra bytes", string(newStatus.ExtBytes)), zap.String("id", jm.workerID), zap.String("worker_id", worker.ID()))
+	return jm.OnWorkerOnline(worker)
 }
 
 // OnJobManagerMessage implements JobMasterImpl.OnJobManagerMessage

@@ -80,13 +80,13 @@ func (u *unitHolderImpl) Init(ctx context.Context) error {
 	u.runCtx, u.runCancel = runCtx, runCancel
 	u.fieldMu.Unlock()
 
-	resultCh := make(chan pb.ProcessResult)
+	resultCh := make(chan pb.ProcessResult, 1)
 	u.processWg.Add(1)
 	go func() {
 		defer u.processWg.Done()
+		u.unit.Process(runCtx, resultCh)
 		u.fetchAndHandleResult(resultCh)
 	}()
-	go u.unit.Process(runCtx, resultCh)
 	return nil
 }
 
@@ -126,13 +126,13 @@ func (u *unitHolderImpl) Resume(ctx context.Context) error {
 	u.result = nil
 	u.fieldMu.Unlock()
 
-	resultCh := make(chan pb.ProcessResult)
+	resultCh := make(chan pb.ProcessResult, 1)
 	u.processWg.Add(1)
 	go func() {
 		defer u.processWg.Done()
+		u.unit.Resume(runCtx, resultCh)
 		u.fetchAndHandleResult(resultCh)
 	}()
-	go u.unit.Resume(runCtx, resultCh)
 	return nil
 }
 

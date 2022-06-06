@@ -52,6 +52,7 @@ func TestUnitHolder(t *testing.T) {
 	require.Equal(t, metadata.StageRunning, stage)
 
 	// mock error
+	time.Sleep(time.Second)
 	u.setResult(pb.ProcessResult{Errors: []*pb.ProcessError{{
 		ErrCode: 0,
 	}}})
@@ -99,6 +100,7 @@ func TestUnitHolder(t *testing.T) {
 	require.Error(t, unitHolder.Resume(context.Background()))
 
 	// mock finished
+	time.Sleep(time.Second)
 	u.setResult(pb.ProcessResult{Errors: []*pb.ProcessError{{
 		Message: "context canceled",
 	}}})
@@ -134,10 +136,14 @@ func (u *mockUnit) Init(ctx context.Context) error {
 }
 
 func (u *mockUnit) Process(ctx context.Context, pr chan pb.ProcessResult) {
+	u.Lock()
+	defer u.Unlock()
 	u.resultCh = pr
 }
 
 func (u *mockUnit) setResult(r pb.ProcessResult) {
+	u.Lock()
+	defer u.Unlock()
 	u.resultCh <- r
 }
 
@@ -148,6 +154,8 @@ func (u *mockUnit) Kill() {}
 func (u *mockUnit) Pause() {}
 
 func (u *mockUnit) Resume(ctx context.Context, pr chan pb.ProcessResult) {
+	u.Lock()
+	defer u.Unlock()
 	u.resultCh = pr
 }
 

@@ -68,6 +68,7 @@ func (f workerFactory) DeserializeConfig(configBytes []byte) (registry.WorkerCon
 
 // NewWorkerImpl implements WorkerFactory.NewWorkerImpl
 func (f workerFactory) NewWorkerImpl(ctx *dcontext.Context, workerID libModel.WorkerID, masterID libModel.MasterID, conf lib.WorkerConfig) (lib.WorkerImpl, error) {
+	log.L().Info("new dm worker", zap.String("id", workerID), zap.String("master-id", masterID))
 	return newDMWorker(ctx, masterID, f.workerType, conf.(*dmconfig.SubTaskConfig)), nil
 }
 
@@ -113,6 +114,7 @@ func newDMWorker(ctx *dcontext.Context, masterID libModel.MasterID, workerType l
 
 // InitImpl implements lib.WorkerImpl.InitImpl
 func (w *dmWorker) InitImpl(ctx context.Context) error {
+	log.L().Info("initializing the dm worker", zap.String("task-id", w.taskID))
 	if err := w.messageAgent.Init(ctx); err != nil {
 		return err
 	}
@@ -159,6 +161,7 @@ func (w *dmWorker) OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) er
 
 // CloseImpl implements lib.WorkerImpl.CloseImpl
 func (w *dmWorker) CloseImpl(ctx context.Context) error {
+	log.L().Info("close the dm worker", zap.String("task-id", w.taskID))
 	// unregister jobmaster client
 	err := w.messageAgent.UpdateClient(w.masterID, nil)
 	if err != nil {
@@ -171,6 +174,7 @@ func (w *dmWorker) CloseImpl(ctx context.Context) error {
 
 // closeAndExit closes the task and exits.
 func (w *dmWorker) closeAndExit(ctx context.Context, status libModel.WorkerStatus) error {
+	log.L().Info("close and exit", zap.String("task-id", w.taskID), zap.String("status", string(status.ExtBytes)))
 	err := w.CloseImpl(ctx)
 	if err != nil {
 		log.L().Warn("fail to close task", log.ShortError(err))
@@ -203,14 +207,16 @@ func (w *dmWorker) persistStorage(ctx context.Context) error {
 // tryUpdateStatus updates status when task stage changed.
 func (w *dmWorker) tryUpdateStatus(ctx context.Context) error {
 	stage, _ := w.unitHolder.Stage()
-	if stage == w.getStage() {
+	currentStage := w.getStage()
+	if stage == currentStage {
 		return nil
 	}
-	log.L().Info("task stage changed", zap.Int("from", int(stage)), zap.Int("to", int(w.stage)))
+	log.L().Info("task stage changed", zap.String("task-id", w.taskID), zap.Int("from", int(currentStage)), zap.Int("to", int(stage)))
 	w.setStage(stage)
 
 	status := w.workerStatus()
 	if stage != metadata.StageFinished {
+		log.L().Info("update status", zap.String("task-id", w.taskID), zap.String("status", string(status.ExtBytes)))
 		return w.UpdateStatus(ctx, status)
 	}
 
@@ -230,7 +236,7 @@ func (w *dmWorker) workerStatus() libModel.WorkerStatus {
 	if stage == metadata.StageFinished {
 		code = libModel.WorkerStatusFinished
 	}
-	status := runtime.TaskStatus{Unit: w.workerType, Task: w.taskID, Stage: stage}
+	status := &runtime.TaskStatus{Unit: w.workerType, Task: w.taskID, Stage: stage}
 	// nolint:errcheck
 	statusBytes, _ := json.Marshal(status)
 	return libModel.WorkerStatus{
@@ -258,16 +264,16 @@ func (w *dmWorker) checkAndAutoResume(ctx context.Context) error {
 		return nil
 	}
 
-	log.L().Error("task runs with error", zap.Any("error msg", result.Errors))
+	log.L().Error("task runs with error", zap.String("task-id", w.taskID), zap.Any("error msg", result.Errors))
 	subtaskStage := &pb.SubTaskStatus{
 		Stage:  pb.Stage_Paused,
 		Result: result,
 	}
 	strategy := w.autoResume.CheckResumeSubtask(subtaskStage, config.DefaultBackoffRollback)
-	log.L().Info("got auto resume strategy", zap.Stringer("strategy", strategy))
+	log.L().Info("got auto resume strategy", zap.String("task-id", w.taskID), zap.Stringer("strategy", strategy))
 
 	if strategy == worker.ResumeDispatch {
-		log.L().Info("dispatch auto resume task")
+		log.L().Info("dispatch auto resume task", zap.String("task-id", w.taskID))
 		return w.unitHolder.Resume(ctx)
 	}
 	return nil

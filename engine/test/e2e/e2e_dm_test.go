@@ -30,6 +30,7 @@ import (
 	"github.com/pingcap/tiflow/engine/client"
 	pb "github.com/pingcap/tiflow/engine/enginepb"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm"
+	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	dmpkg "github.com/pingcap/tiflow/engine/pkg/dm"
 )
 
@@ -163,12 +164,31 @@ func testSimpleAllModeTask(
 	resp2, err = operateTask(ctx, client, resp.JobId, nil, dmpkg.Pause, t)
 	require.NoError(t, err)
 	require.Nil(t, resp2.Err)
-	require.Equal(t, "", resp2.JsonRet)
+	require.Equal(t, "null", resp2.JsonRet)
 
-	resp2, err = queryStatus(ctx, client, resp.JobId, []string{source1, source2}, t)
+	// eventually paused
+	require.Eventually(t, func() bool {
+		resp2, err = queryStatus(ctx, client, resp.JobId, []string{source1}, t)
+		require.NoError(t, err)
+		require.Nil(t, resp2.Err)
+		require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &jobStatus))
+		return jobStatus.TaskStatus[source1].Status.Stage == metadata.StagePaused
+	}, time.Second*10, time.Second)
+
+	// resume task
+	resp2, err = operateTask(ctx, client, resp.JobId, nil, dmpkg.Resume, t)
 	require.NoError(t, err)
 	require.Nil(t, resp2.Err)
-	require.Equal(t, "", resp2.JsonRet)
+	require.Equal(t, "null", resp2.JsonRet)
+
+	// eventually resumed
+	require.Eventually(t, func() bool {
+		resp2, err = queryStatus(ctx, client, resp.JobId, []string{source1}, t)
+		require.NoError(t, err)
+		require.Nil(t, resp2.Err)
+		require.NoError(t, json.Unmarshal([]byte(resp2.JsonRet), &jobStatus))
+		return jobStatus.TaskStatus[source1].Status.Stage == metadata.StageRunning
+	}, time.Second*10, time.Second)
 }
 
 func queryStatus(ctx context.Context, client client.MasterClient, jobID string, tasks []string, t *testing.T) (*pb.DebugJobResponse, error) {
