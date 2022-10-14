@@ -269,6 +269,8 @@ type RowChangedEvent struct {
 
 	// SplitTxn marks this RowChangedEvent as the first line of a new txn.
 	SplitTxn bool `json:"-" msg:"-"`
+	// ReplicatingTs is ts when a table starts replicating events to downstream.
+	ReplicatingTs Ts `json:"-" msg:"-"`
 }
 
 // GetCommitTs returns the commit timestamp of this event.
@@ -464,36 +466,13 @@ func ColumnValueString(c interface{}) string {
 	return data
 }
 
-// ColumnInfo represents the name and type information passed to the sink
-type ColumnInfo struct {
-	Name string `msg:"name"`
-	Type byte   `msg:"type"`
-}
-
-// FromTiColumnInfo populates cdc's ColumnInfo from TiDB's model.ColumnInfo
-func (c *ColumnInfo) FromTiColumnInfo(tiColumnInfo *model.ColumnInfo) {
-	c.Type = tiColumnInfo.GetType()
-	c.Name = tiColumnInfo.Name.O
-}
-
-// SimpleTableInfo is the simplified table info passed to the sink
-type SimpleTableInfo struct {
-	// db name
-	Schema string `msg:"schema"`
-	// table name
-	Table string `msg:"table"`
-	// table ID
-	TableID    int64         `msg:"table-id"`
-	ColumnInfo []*ColumnInfo `msg:"column-info"`
-}
-
 // DDLEvent stores DDL event
 type DDLEvent struct {
 	StartTs      uint64           `msg:"start-ts"`
 	CommitTs     uint64           `msg:"commit-ts"`
-	TableInfo    *SimpleTableInfo `msg:"table-info"`
-	PreTableInfo *SimpleTableInfo `msg:"pre-table-info"`
 	Query        string           `msg:"query"`
+	TableInfo    *TableInfo       `msg:"-"`
+	PreTableInfo *TableInfo       `msg:"-"`
 	Type         model.ActionType `msg:"-"`
 	Done         bool             `msg:"-"`
 }
@@ -504,9 +483,9 @@ type RedoDDLEvent struct {
 	Type byte      `msg:"type"`
 }
 
-// FromJob fills the values of DDLEvent from DDL job
-func (d *DDLEvent) FromJob(job *model.Job, preTableInfo *TableInfo) {
-	// populating DDLEvent of a rename tables job is handled in `FromRenameTablesJob()`
+// FromJob fills the values with DDLEvent from DDL job
+func (d *DDLEvent) FromJob(job *model.Job, preTableInfo *TableInfo, tableInfo *TableInfo) {
+	// populating DDLEvent of an `rename tables` job is handled in `FromRenameTablesJob()`
 	if d.Type == model.ActionRenameTables {
 		return
 	}
@@ -519,9 +498,9 @@ func (d *DDLEvent) FromJob(job *model.Job, preTableInfo *TableInfo) {
 	rebuildQuery := func() {
 		switch d.Type {
 		case model.ActionDropTable:
-			d.Query = fmt.Sprintf("DROP TABLE `%s`.`%s`", d.TableInfo.Schema, d.TableInfo.Table)
+			d.Query = fmt.Sprintf("DROP TABLE `%s`.`%s`", d.TableInfo.TableName.Schema, d.TableInfo.TableName.Table)
 		case model.ActionDropView:
-			d.Query = fmt.Sprintf("DROP VIEW `%s`.`%s`", d.TableInfo.Schema, d.TableInfo.Table)
+			d.Query = fmt.Sprintf("DROP VIEW `%s`.`%s`", d.TableInfo.TableName.Schema, d.TableInfo.TableName.Table)
 		default:
 			d.Query = job.Query
 		}
@@ -530,10 +509,8 @@ func (d *DDLEvent) FromJob(job *model.Job, preTableInfo *TableInfo) {
 	d.StartTs = job.StartTS
 	d.CommitTs = job.BinlogInfo.FinishedTS
 	d.Type = job.Type
-	// fill PreTableInfo for the event.
-	d.fillPreTableInfo(preTableInfo)
-	// fill TableInfo for the event.
-	d.fillTableInfo(job.BinlogInfo.TableInfo, job.SchemaName)
+	d.PreTableInfo = preTableInfo
+	d.TableInfo = tableInfo
 	// rebuild the query if necessary
 	rebuildQuery()
 }
@@ -541,7 +518,7 @@ func (d *DDLEvent) FromJob(job *model.Job, preTableInfo *TableInfo) {
 // FromRenameTablesJob fills the values of DDLEvent from a rename tables DDL job
 func (d *DDLEvent) FromRenameTablesJob(job *model.Job,
 	oldSchemaName, newSchemaName string,
-	preTableInfo *TableInfo, tableInfo *model.TableInfo,
+	preTableInfo *TableInfo, tableInfo *TableInfo,
 ) {
 	if job.Type != model.ActionRenameTables {
 		return
@@ -554,60 +531,19 @@ func (d *DDLEvent) FromRenameTablesJob(job *model.Job,
 	d.Query = fmt.Sprintf("RENAME TABLE `%s`.`%s` TO `%s`.`%s`",
 		oldSchemaName, oldTableName, newSchemaName, newTableName)
 	d.Type = model.ActionRenameTable
-	// fill PreTableInfo for the event.
-	d.fillPreTableInfo(preTableInfo)
-	// fill TableInfo for the event.
-	d.fillTableInfo(tableInfo, newSchemaName)
-}
-
-// fillTableInfo populates the TableInfo of an DDLEvent
-func (d *DDLEvent) fillTableInfo(tableInfo *model.TableInfo,
-	schemaName string,
-) {
-	// `TableInfo` field of `DDLEvent` should always not be nil
-	d.TableInfo = new(SimpleTableInfo)
-	d.TableInfo.Schema = schemaName
-
-	if tableInfo == nil {
-		return
-	}
-
-	d.TableInfo.ColumnInfo = make([]*ColumnInfo, len(tableInfo.Columns))
-	for i, colInfo := range tableInfo.Columns {
-		d.TableInfo.ColumnInfo[i] = new(ColumnInfo)
-		d.TableInfo.ColumnInfo[i].FromTiColumnInfo(colInfo)
-	}
-
-	d.TableInfo.Table = tableInfo.Name.O
-	d.TableInfo.TableID = tableInfo.ID
-}
-
-// fillPreTableInfo populates the PreTableInfo of an event
-func (d *DDLEvent) fillPreTableInfo(preTableInfo *TableInfo) {
-	if preTableInfo == nil {
-		return
-	}
-	d.PreTableInfo = new(SimpleTableInfo)
-	d.PreTableInfo.Schema = preTableInfo.TableName.Schema
-	d.PreTableInfo.Table = preTableInfo.TableName.Table
-	d.PreTableInfo.TableID = preTableInfo.ID
-
-	d.PreTableInfo.ColumnInfo = make([]*ColumnInfo, len(preTableInfo.Columns))
-	for i, colInfo := range preTableInfo.Columns {
-		d.PreTableInfo.ColumnInfo[i] = new(ColumnInfo)
-		d.PreTableInfo.ColumnInfo[i].FromTiColumnInfo(colInfo)
-	}
+	d.PreTableInfo = preTableInfo
+	d.TableInfo = tableInfo
 }
 
 // SingleTableTxn represents a transaction which includes many row events in a single table
+//
 //msgp:ignore SingleTableTxn
 type SingleTableTxn struct {
 	// data fields of SingleTableTxn
-	Table     *TableName
-	StartTs   uint64
-	CommitTs  uint64
-	Rows      []*RowChangedEvent
-	ReplicaID uint64
+	Table    *TableName
+	StartTs  uint64
+	CommitTs uint64
+	Rows     []*RowChangedEvent
 
 	// control fields of SingleTableTxn
 	// FinishWg is a barrier txn, after this txn is received, the worker must
@@ -630,4 +566,9 @@ func (t *SingleTableTxn) Append(row *RowChangedEvent) {
 			zap.Any("row", row))
 	}
 	t.Rows = append(t.Rows, row)
+}
+
+// ToWaitFlush indicates whether to wait flushing after the txn is processed or not.
+func (t *SingleTableTxn) ToWaitFlush() bool {
+	return t.FinishWg != nil
 }

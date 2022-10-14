@@ -28,9 +28,11 @@ import (
 	"github.com/pingcap/tiflow/cdc/capture"
 	mock_capture "github.com/pingcap/tiflow/cdc/capture/mock"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/owner"
 	mock_owner "github.com/pingcap/tiflow/cdc/owner/mock"
 	"github.com/pingcap/tiflow/cdc/scheduler"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
+	mock_etcd "github.com/pingcap/tiflow/pkg/etcd/mock"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -92,7 +94,12 @@ func (p *mockStatusProvider) GetCaptures(ctx context.Context) ([]*model.CaptureI
 	return args.Get(0).([]*model.CaptureInfo), args.Error(1)
 }
 
-func newRouter(c capture.Capture, p *mockStatusProvider) *gin.Engine {
+func (p *mockStatusProvider) IsHealthy(ctx context.Context) (bool, error) {
+	args := p.Called(ctx)
+	return args.Get(0).(bool), args.Error(1)
+}
+
+func newRouter(c capture.Capture, p owner.StatusProvider) *gin.Engine {
 	router := gin.New()
 	RegisterOpenAPIRoutes(router, NewOpenAPI4Test(c, p))
 	return router
@@ -193,7 +200,10 @@ func TestGetChangefeed(t *testing.T) {
 	t.Parallel()
 	ctrl := gomock.NewController(t)
 	mo := mock_owner.NewMockOwner(ctrl)
+	etcdClient := mock_etcd.NewMockCDCEtcdClient(ctrl)
+	etcdClient.EXPECT().GetClusterID().Return("abcd").AnyTimes()
 	cp := capture.NewCapture4Test(mo)
+	cp.EtcdClient = etcdClient
 	router := newRouter(cp, newStatusProvider())
 
 	// test get changefeed succeeded
@@ -345,7 +355,15 @@ func TestRemoveChangefeed(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mo := mock_owner.NewMockOwner(ctrl)
 	cp := capture.NewCapture4Test(mo)
-	router := newRouter(cp, newStatusProvider())
+
+	statusProvider := &mockStatusProvider{}
+	statusProvider.On("GetChangeFeedStatus", mock.Anything, changeFeedID).
+		Return(&model.ChangeFeedStatus{CheckpointTs: 1}, nil).Once()
+	statusProvider.On("GetChangeFeedStatus", mock.Anything, changeFeedID).
+		Return(new(model.ChangeFeedStatus),
+			cerror.ErrChangeFeedNotExists.FastGenByArgs(changeFeedID)).Once()
+
+	router1 := newRouter(cp, statusProvider)
 
 	// test remove changefeed succeeded
 	mo.EXPECT().
@@ -358,10 +376,11 @@ func TestRemoveChangefeed(t *testing.T) {
 	api := testCase{url: fmt.Sprintf("/api/v1/changefeeds/%s", changeFeedID.ID), method: "DELETE"}
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
-	router.ServeHTTP(w, req)
+	router1.ServeHTTP(w, req)
 	require.Equal(t, 202, w.Code)
 
-	// test remove changefeed failed from owner size
+	router2 := newRouter(cp, newStatusProvider())
+	// test remove changefeed failed from owner side
 	mo.EXPECT().
 		EnqueueJob(gomock.Any(), gomock.Any()).
 		Do(func(adminJob model.AdminJob, done chan<- error) {
@@ -371,7 +390,7 @@ func TestRemoveChangefeed(t *testing.T) {
 	api = testCase{url: fmt.Sprintf("/api/v1/changefeeds/%s", changeFeedID.ID), method: "DELETE"}
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
-	router.ServeHTTP(w, req)
+	router2.ServeHTTP(w, req)
 	require.Equal(t, 400, w.Code)
 	respErr := model.HTTPError{}
 	err := json.NewDecoder(w.Body).Decode(&respErr)
@@ -385,7 +404,7 @@ func TestRemoveChangefeed(t *testing.T) {
 	}
 	w = httptest.NewRecorder()
 	req, _ = http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
-	router.ServeHTTP(w, req)
+	router2.ServeHTTP(w, req)
 	require.Equal(t, 400, w.Code)
 	respErr = model.HTTPError{}
 	err = json.NewDecoder(w.Body).Decode(&respErr)
@@ -739,7 +758,10 @@ func TestListCapture(t *testing.T) {
 	t.Parallel()
 	ctrl := gomock.NewController(t)
 	mo := mock_owner.NewMockOwner(ctrl)
+	etcdClient := mock_etcd.NewMockCDCEtcdClient(ctrl)
+	etcdClient.EXPECT().GetClusterID().Return("abcd").AnyTimes()
 	cp := capture.NewCapture4Test(mo)
+	cp.EtcdClient = etcdClient
 	router := newRouter(cp, newStatusProvider())
 	// test list processor succeeded
 	api := testCase{url: "/api/v1/captures", method: "GET"}
@@ -759,7 +781,10 @@ func TestServerStatus(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	mo := mock_owner.NewMockOwner(ctrl)
 	cp := capture.NewCapture4Test(mo)
+	etcdClient := mock_etcd.NewMockCDCEtcdClient(ctrl)
+	etcdClient.EXPECT().GetClusterID().Return("abcd").AnyTimes()
 	ownerRouter := newRouter(cp, newStatusProvider())
+	cp.EtcdClient = etcdClient
 	api := testCase{url: "/api/v1/status", method: "GET"}
 	w := httptest.NewRecorder()
 	req, _ := http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
@@ -770,9 +795,11 @@ func TestServerStatus(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, "capture-for-test", resp.ID)
 	require.True(t, resp.IsOwner)
+	require.Equal(t, "abcd", resp.ClusterID)
 
 	// capture is not owner
 	c := capture.NewCapture4Test(nil)
+	c.EtcdClient = etcdClient
 	r := gin.New()
 	RegisterOpenAPIRoutes(r, NewOpenAPI4Test(c, nil))
 	api = testCase{url: "/api/v1/status", method: "GET"}
@@ -784,6 +811,7 @@ func TestServerStatus(t *testing.T) {
 	err = json.NewDecoder(w.Body).Decode(&resp)
 	require.Nil(t, err)
 	require.False(t, resp.IsOwner)
+	require.Equal(t, "abcd", resp.ClusterID)
 }
 
 func TestServerStatusLiveness(t *testing.T) {
@@ -791,6 +819,8 @@ func TestServerStatusLiveness(t *testing.T) {
 	// capture is owner
 	ctrl := gomock.NewController(t)
 	cp := mock_capture.NewMockCapture(ctrl)
+	etcdClient := mock_etcd.NewMockCDCEtcdClient(ctrl)
+	etcdClient.EXPECT().GetClusterID().Return("abcd").AnyTimes()
 	ownerRouter := newRouter(cp, newStatusProvider())
 	api := testCase{url: "/api/v1/status", method: "GET"}
 
@@ -801,6 +831,7 @@ func TestServerStatusLiveness(t *testing.T) {
 	cp.EXPECT().IsOwner().DoAndReturn(func() bool {
 		return true
 	}).AnyTimes()
+	cp.EXPECT().GetEtcdClient().Return(etcdClient).AnyTimes()
 
 	// Alive.
 	alive := cp.EXPECT().Liveness().DoAndReturn(func() model.Liveness {
@@ -866,7 +897,49 @@ func TestSetLogLevel(t *testing.T) {
 	require.Contains(t, httpError.Error, "fail to change log level: foo")
 }
 
+func TestHealth(t *testing.T) {
+	t.Parallel()
+	// capture is owner
+	ctrl := gomock.NewController(t)
+	cp := mock_capture.NewMockCapture(ctrl)
+
+	api := testCase{url: "/api/v1/health", method: "GET"}
+	sp := mock_owner.NewMockStatusProvider(ctrl)
+	ownerRouter := newRouter(cp, sp)
+
+	cp.EXPECT().IsReady().Return(true).AnyTimes()
+	cp.EXPECT().Info().DoAndReturn(func() (model.CaptureInfo, error) {
+		return model.CaptureInfo{}, nil
+	}).AnyTimes()
+	cp.EXPECT().IsOwner().DoAndReturn(func() bool {
+		return true
+	}).AnyTimes()
+
+	// IsHealthy returns error.
+	isHealthError := sp.EXPECT().IsHealthy(gomock.Any()).
+		Return(false, cerror.ErrOwnerNotFound)
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
+	ownerRouter.ServeHTTP(w, req)
+	require.Equal(t, 500, w.Code)
+
+	// IsHealthy returns false.
+	isHealthFalse := sp.EXPECT().IsHealthy(gomock.Any()).
+		Return(false, cerror.ErrOwnerNotFound).After(isHealthError)
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
+	ownerRouter.ServeHTTP(w, req)
+	require.Equal(t, 500, w.Code)
+
+	// IsHealthy returns true.
+	sp.EXPECT().IsHealthy(gomock.Any()).
+		Return(true, nil).After(isHealthFalse)
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequestWithContext(context.Background(), api.method, api.url, nil)
+	ownerRouter.ServeHTTP(w, req)
+	require.Equal(t, 200, w.Code)
+}
+
 // TODO: finished these test cases after we decouple those APIs from etcdClient.
 func TestCreateChangefeed(t *testing.T) {}
 func TestUpdateChangefeed(t *testing.T) {}
-func TestHealth(t *testing.T)           {}

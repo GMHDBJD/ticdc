@@ -17,7 +17,6 @@ import (
 	"container/heap"
 	"context"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,8 +31,9 @@ import (
 	"go.uber.org/zap"
 )
 
-//go:generate mockery --name=RedoLogReader --inpackage
 // RedoLogReader is a reader abstraction for redo log storage layer
+//
+//go:generate mockery --name=RedoLogReader --inpackage
 type RedoLogReader interface {
 	io.Closer
 
@@ -343,7 +343,7 @@ func (l *LogReader) ReadMeta(ctx context.Context) (checkpointTs, resolvedTs uint
 		return l.meta.CheckpointTs, l.meta.ResolvedTs, nil
 	}
 
-	files, err := ioutil.ReadDir(l.cfg.Dir)
+	files, err := os.ReadDir(l.cfg.Dir)
 	if err != nil {
 		return 0, 0, cerror.WrapError(cerror.ErrRedoFileOp, errors.Annotate(err, "can't read log file directory"))
 	}

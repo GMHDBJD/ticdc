@@ -18,8 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
@@ -205,8 +205,8 @@ func (r *Request) WithMaxRetries(maxRetries uint64) *Request {
 
 // WithBody makes http request use obj as its body.
 // only supports two types now:
-//   1. io.Reader
-//   2. type which can be json marshalled
+//  1. io.Reader
+//  2. type which can be json marshalled
 func (r *Request) WithBody(obj interface{}) *Request {
 	if r.err != nil {
 		return r
@@ -313,7 +313,7 @@ func (r *Request) Do(ctx context.Context) (res *Result) {
 			}
 			// close the body to let the TCP connection be reused after reconnecting
 			// see https://github.com/golang/go/blob/go1.18.1/src/net/http/response.go#L62-L64
-			_, _ = io.Copy(ioutil.Discard, resp.Body)
+			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 		}()
 
@@ -347,7 +347,7 @@ func (r *Request) Do(ctx context.Context) (res *Result) {
 func (r *Request) checkResponse(resp *http.Response) *Result {
 	var body []byte
 	if resp.Body != nil {
-		data, err := ioutil.ReadAll(resp.Body)
+		data, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return &Result{err: err}
 		}
@@ -360,6 +360,12 @@ func (r *Request) checkResponse(resp *http.Response) *Result {
 		err := json.Unmarshal(body, &jsonErr)
 		if err == nil {
 			err = errors.New(jsonErr.Error)
+		} else {
+			err = fmt.Errorf(
+				"call cdc api failed, url=%s, "+
+					"code=%d, contentType=%s, response=%s",
+				r.URL().String(),
+				resp.StatusCode, contentType, string(body))
 		}
 
 		return &Result{

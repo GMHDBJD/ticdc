@@ -27,6 +27,7 @@ import (
 	"github.com/pingcap/tiflow/pkg/orchestrator"
 	"github.com/pingcap/tiflow/pkg/security"
 	pd "github.com/tikv/pd/client"
+	"go.uber.org/atomic"
 	"go.uber.org/zap"
 )
 
@@ -51,7 +52,7 @@ type Manager struct {
 
 	defaultUpstream *Upstream
 
-	lastTickTime time.Time
+	lastTickTime atomic.Time
 
 	initUpstreamFunc func(ctx context.Context, up *Upstream, gcID string) error
 }
@@ -138,10 +139,8 @@ func (m *Manager) add(upstreamID uint64,
 }
 
 // AddUpstream adds an upstream and init it.
-func (m *Manager) AddUpstream(upstreamID model.UpstreamID,
-	info *model.UpstreamInfo,
-) *Upstream {
-	return m.add(upstreamID,
+func (m *Manager) AddUpstream(info *model.UpstreamInfo) *Upstream {
+	return m.add(info.ID,
 		strings.Split(info.PDEndpoints, ","),
 		&security.Credential{
 			CAPath:        info.CAPath,
@@ -172,12 +171,23 @@ func (m *Manager) Close() {
 	})
 }
 
+// Visit on each upstream, return error on the first
+func (m *Manager) Visit(visitor func(up *Upstream) error) error {
+	var err error
+	m.ups.Range(func(k, v interface{}) bool {
+		err = visitor(v.(*Upstream))
+		return err == nil
+	})
+	return err
+}
+
 // Tick checks and frees upstream that have not been used
 // for a long time to save resources.
+// It's a thread-safe method.
 func (m *Manager) Tick(ctx context.Context,
 	globalState *orchestrator.GlobalReactorState,
 ) error {
-	if time.Since(m.lastTickTime) < tickInterval {
+	if time.Since(m.lastTickTime.Load()) < tickInterval {
 		return nil
 	}
 
@@ -227,6 +237,6 @@ func (m *Manager) Tick(ctx context.Context,
 		}
 		return true
 	})
-	m.lastTickTime = time.Now()
+	m.lastTickTime.Store(time.Now())
 	return err
 }

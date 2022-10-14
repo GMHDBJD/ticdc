@@ -29,6 +29,8 @@ import (
 	"github.com/pingcap/tiflow/cdc/owner"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/logutil"
+	"github.com/pingcap/tiflow/pkg/retry"
+	"github.com/pingcap/tiflow/pkg/util"
 	"github.com/pingcap/tiflow/pkg/version"
 	"github.com/tikv/client-go/v2/oracle"
 	"go.uber.org/zap"
@@ -171,10 +173,8 @@ func (h *OpenAPI) ListChangefeed(c *gin.Context) {
 			ID:         cfID.ID,
 		}
 
-		if cfInfo != nil {
-			resp.FeedState = cfInfo.State
-			resp.RunningError = cfInfo.Error
-		}
+		resp.FeedState = cfInfo.State
+		resp.RunningError = cfInfo.Error
 
 		if cfStatus != nil {
 			resp.CheckpointTSO = cfStatus.CheckpointTs
@@ -237,12 +237,16 @@ func (h *OpenAPI) GetChangefeed(c *gin.Context) {
 				})
 		}
 	}
+	sinkURI, err := util.MaskSinkURI(info.SinkURI)
+	if err != nil {
+		log.Error("failed to mask sink URI", zap.Error(err))
+	}
 
 	changefeedDetail := &model.ChangefeedDetail{
 		UpstreamID:     info.UpstreamID,
 		Namespace:      changefeedID.Namespace,
 		ID:             changefeedID.ID,
-		SinkURI:        info.SinkURI,
+		SinkURI:        sinkURI,
 		CreateTime:     model.JSONTime(info.CreateTime),
 		StartTs:        info.StartTs,
 		TargetTs:       info.TargetTs,
@@ -487,6 +491,28 @@ func (h *OpenAPI) RemoveChangefeed(c *gin.Context) {
 		_ = c.Error(err)
 		return
 	}
+
+	// Owner needs at least tow ticks to remove a changefeed,
+	// we need to wait for it.
+	err = retry.Do(ctx, func() error {
+		_, err := h.statusProvider().GetChangeFeedStatus(ctx, changefeedID)
+		if err != nil {
+			if strings.Contains(err.Error(), "ErrChangeFeedNotExists") {
+				return nil
+			}
+			return err
+		}
+		return cerror.ErrChangeFeedDeletionUnfinished.GenWithStackByArgs(changefeedID)
+	},
+		retry.WithMaxTries(100),         // max retry duration is 1 minute
+		retry.WithBackoffBaseDelay(600), // default owner tick interval is 200ms
+		retry.WithIsRetryableErr(cerror.IsRetryableError))
+
+	if err != nil {
+		_ = c.Error(err)
+		return
+	}
+
 	c.Status(http.StatusAccepted)
 }
 
@@ -732,7 +758,12 @@ func (h *OpenAPI) ListCapture(c *gin.Context) {
 	for _, c := range captureInfos {
 		isOwner := c.ID == ownerID
 		captures = append(captures,
-			&model.Capture{ID: c.ID, IsOwner: isOwner, AdvertiseAddr: c.AdvertiseAddr})
+			&model.Capture{
+				ID:            c.ID,
+				IsOwner:       isOwner,
+				AdvertiseAddr: c.AdvertiseAddr,
+				ClusterID:     h.capture.GetEtcdClient().GetClusterID(),
+			})
 	}
 
 	c.IndentedJSON(http.StatusOK, captures)
@@ -823,12 +854,13 @@ func (h *OpenAPI) ServerStatus(c *gin.Context) {
 		return
 	}
 	status := model.ServerStatus{
-		Version:  version.ReleaseVersion,
-		GitHash:  version.GitHash,
-		Pid:      os.Getpid(),
-		ID:       info.ID,
-		IsOwner:  h.capture.IsOwner(),
-		Liveness: h.capture.Liveness(),
+		Version:   version.ReleaseVersion,
+		GitHash:   version.GitHash,
+		Pid:       os.Getpid(),
+		ID:        info.ID,
+		ClusterID: h.capture.GetEtcdClient().GetClusterID(),
+		IsOwner:   h.capture.IsOwner(),
+		Liveness:  h.capture.Liveness(),
 	}
 	c.IndentedJSON(http.StatusOK, status)
 }
@@ -843,9 +875,19 @@ func (h *OpenAPI) ServerStatus(c *gin.Context) {
 // @Failure 500 {object} model.HTTPError
 // @Router	/api/v1/health [get]
 func (h *OpenAPI) Health(c *gin.Context) {
-	ctx := c.Request.Context()
+	if !h.capture.IsOwner() {
+		middleware.ForwardToOwnerMiddleware(h.capture)(c)
+		return
+	}
 
-	if _, err := h.capture.GetOwnerCaptureInfo(ctx); err != nil {
+	ctx := c.Request.Context()
+	health, err := h.statusProvider().IsHealthy(ctx)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, model.NewHTTPError(err))
+		return
+	}
+	if !health {
+		err = cerror.ErrClusterIsUnhealthy.FastGenByArgs()
 		c.IndentedJSON(http.StatusInternalServerError, model.NewHTTPError(err))
 		return
 	}

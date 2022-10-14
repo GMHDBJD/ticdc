@@ -20,10 +20,9 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	"go.uber.org/atomic"
-
 	"github.com/pingcap/tiflow/engine/model"
 	"github.com/pingcap/tiflow/engine/pkg/clock"
+	"go.uber.org/atomic"
 )
 
 type dummyWorker struct {
@@ -67,6 +66,10 @@ func (d *dummyWorker) Poll(ctx context.Context) error {
 	if d.needQuit.Load() {
 		return errors.New("worker is finished")
 	}
+	return nil
+}
+
+func (d *dummyWorker) Stop(ctx context.Context) error {
 	return nil
 }
 

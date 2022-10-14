@@ -16,10 +16,9 @@ package owner
 import (
 	"context"
 
-	cerror "github.com/pingcap/tiflow/pkg/errors"
-
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/cdc/model"
+	cerror "github.com/pingcap/tiflow/pkg/errors"
 )
 
 // StatusProvider provide some func to get meta-information from owner
@@ -48,6 +47,9 @@ type StatusProvider interface {
 
 	// GetCaptures returns the information about all captures.
 	GetCaptures(ctx context.Context) ([]*model.CaptureInfo, error)
+
+	// IsHealthy return true if the cluster is healthy
+	IsHealthy(ctx context.Context) (bool, error)
 }
 
 // QueryType is the type of different queries.
@@ -66,6 +68,8 @@ const (
 	QueryProcessors
 	// QueryCaptures is the type of query captures info.
 	QueryCaptures
+	// QueryHealth is the type of query cluster health info.
+	QueryHealth
 )
 
 // Query wraps query command and return results.
@@ -169,6 +173,16 @@ func (p *ownerStatusProvider) GetCaptures(ctx context.Context) ([]*model.Capture
 		return nil, errors.Trace(err)
 	}
 	return query.Data.([]*model.CaptureInfo), nil
+}
+
+func (p *ownerStatusProvider) IsHealthy(ctx context.Context) (bool, error) {
+	query := &Query{
+		Tp: QueryHealth,
+	}
+	if err := p.sendQueryToOwner(ctx, query); err != nil {
+		return false, errors.Trace(err)
+	}
+	return query.Data.(bool), nil
 }
 
 func (p *ownerStatusProvider) sendQueryToOwner(ctx context.Context, query *Query) error {

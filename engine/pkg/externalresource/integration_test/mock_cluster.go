@@ -19,30 +19,29 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stretchr/testify/require"
-	"go.uber.org/atomic"
-	"golang.org/x/time/rate"
-
-	"github.com/pingcap/tiflow/engine/client"
+	"github.com/pingcap/log"
 	pb "github.com/pingcap/tiflow/engine/enginepb"
 	"github.com/pingcap/tiflow/engine/model"
+	"github.com/pingcap/tiflow/engine/pkg/client"
 	"github.com/pingcap/tiflow/engine/pkg/externalresource/broker"
 	"github.com/pingcap/tiflow/engine/pkg/externalresource/manager"
-	resourcemeta "github.com/pingcap/tiflow/engine/pkg/externalresource/resourcemeta/model"
-	"github.com/pingcap/tiflow/engine/pkg/externalresource/resourcetypes"
-	"github.com/pingcap/tiflow/engine/pkg/externalresource/storagecfg"
+	resModel "github.com/pingcap/tiflow/engine/pkg/externalresource/model"
 	pkgOrm "github.com/pingcap/tiflow/engine/pkg/orm"
 	"github.com/pingcap/tiflow/engine/pkg/rpcutil"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 type mockCluster struct {
 	executorInfo *manager.MockExecutorInfoProvider
 	jobInfo      *manager.MockJobStatusProvider
 
-	service        *manager.Service
-	gcCoordinator  *manager.DefaultGCCoordinator
-	gcRunner       *manager.DefaultGCRunner
-	clientsManager *client.Manager
+	service       *manager.Service
+	gcCoordinator manager.GCCoordinator
+	gcRunner      manager.GCRunner
+	executorGroup *client.MockExecutorGroup
 
 	meta pkgOrm.Client
 
@@ -65,29 +64,26 @@ func newMockGCCluster() *mockCluster {
 	id := "leader"
 	leaderVal := &atomic.Value{}
 	leaderVal.Store(&rpcutil.Member{Name: id})
-	service := manager.NewService(meta, executorInfo, rpcutil.NewPreRPCHook[pb.ResourceManagerClient](
+	service := manager.NewService(meta, rpcutil.NewPreRPCHook[pb.ResourceManagerClient](
 		id,
 		leaderVal,
 		&rpcutil.LeaderClientWithLock[pb.ResourceManagerClient]{},
 		atomic.NewBool(true),
-		&rate.Limiter{}))
+		&rate.Limiter{}, nil))
 
-	clientsManager := client.NewClientManager()
-	resourceTp := resourcetypes.NewLocalFileResourceType(clientsManager)
-	gcRunner := manager.NewGCRunner(meta, map[resourcemeta.ResourceType]manager.GCHandlerFunc{
-		"local": resourceTp.GCHandler(),
-	})
+	executorGroup := client.NewMockExecutorGroup()
+	gcRunner := manager.NewGCRunner(meta, executorGroup, nil)
 	gcCoordinator := manager.NewGCCoordinator(executorInfo, jobInfo, meta, gcRunner)
 
 	return &mockCluster{
-		executorInfo:   executorInfo,
-		jobInfo:        jobInfo,
-		service:        service,
-		gcCoordinator:  gcCoordinator,
-		gcRunner:       gcRunner,
-		brokers:        make(map[model.ExecutorID]*broker.DefaultBroker),
-		clientsManager: clientsManager,
-		meta:           meta,
+		executorInfo:  executorInfo,
+		jobInfo:       jobInfo,
+		service:       service,
+		gcCoordinator: gcCoordinator,
+		gcRunner:      gcRunner,
+		brokers:       make(map[model.ExecutorID]*broker.DefaultBroker),
+		executorGroup: executorGroup,
+		meta:          meta,
 	}
 }
 
@@ -122,16 +118,19 @@ func (c *mockCluster) Stop() {
 }
 
 func (c *mockCluster) AddBroker(id model.ExecutorID, baseDir string) {
-	config := &storagecfg.Config{Local: storagecfg.LocalFileConfig{BaseDir: baseDir}}
-	cli := rpcutil.NewFailoverRPCClientsForTest[pb.ResourceManagerClient](&resourceClientStub{service: c.service})
-	brk := broker.NewBroker(config, id, cli)
+	config := &resModel.Config{Local: resModel.LocalFileConfig{BaseDir: baseDir}}
+	cli := &resourceClientStub{service: c.service}
+	brk, err := broker.NewBroker(config, id, cli)
+	if err != nil {
+		log.Panic("create broker failed", zap.Error(err))
+	}
 
 	c.brokerLock.Lock()
 	c.brokers[id] = brk
 	c.brokerLock.Unlock()
 
-	c.executorInfo.AddExecutor(string(id))
-	_ = c.clientsManager.AddExecutorClient(id, &executorClientStub{
+	c.executorInfo.AddExecutor(string(id), "")
+	c.executorGroup.AddClient(id, &executorClientStub{
 		brk: brk,
 	})
 }

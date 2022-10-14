@@ -43,12 +43,12 @@ func TestChan(t *testing.T) {
 			c := New[int](Cap(chanCap))
 			recv1 := false
 			go func() {
-				_ = <-c.Out()
+				<-c.Out()
 				recv1 = true
 			}()
 			recv2 := false
 			go func() {
-				_, _ = <-c.Out()
+				<-c.Out()
 				recv2 = true
 			}()
 			time.Sleep(time.Millisecond)
@@ -56,12 +56,12 @@ func TestChan(t *testing.T) {
 			require.Falsef(t, recv2, "chan[%d]: receive from empty chan", chanCap)
 			// Ensure that non-blocking receive does not block.
 			select {
-			case _ = <-c.Out():
+			case <-c.Out():
 				t.Fatalf("chan[%d]: receive from empty chan", chanCap)
 			default:
 			}
 			select {
-			case _, _ = <-c.Out():
+			case <-c.Out():
 				t.Fatalf("chan[%d]: receive from empty chan", chanCap)
 			default:
 			}
@@ -229,10 +229,12 @@ const internalCacheSize = 16 + 1<<10
 // This test checks that select acts on the state of the channels at one
 // moment in the execution, not over a smeared time window.
 // In the test, one goroutine does:
+//
 //	create c1, c2
 //	make c1 ready for receiving
 //	create second goroutine
 //	make c2 ready for receiving
+//
 // The second goroutine does a non-blocking select receiving from c1 and c2.
 // From the time the second goroutine is created, at least one of c1 and c2
 // is always ready for receiving, so the select in the second goroutine must

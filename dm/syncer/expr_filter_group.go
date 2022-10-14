@@ -21,12 +21,11 @@ import (
 	"github.com/pingcap/tidb/util/chunk"
 	"github.com/pingcap/tidb/util/dbutil"
 	"github.com/pingcap/tidb/util/filter"
+	"github.com/pingcap/tiflow/dm/config"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
-	"go.uber.org/zap"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
+	"go.uber.org/zap"
 )
 
 // ExprFilterGroup groups many related fields about expression filter.

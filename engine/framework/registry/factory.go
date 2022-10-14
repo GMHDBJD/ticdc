@@ -15,12 +15,13 @@ package registry
 
 import (
 	"encoding/json"
+	libErrors "errors"
 	"reflect"
 
 	"github.com/pingcap/errors"
-
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/engine/framework"
+	"github.com/pingcap/tiflow/engine/framework/fake"
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	dcontext "github.com/pingcap/tiflow/engine/pkg/context"
 )
@@ -38,6 +39,9 @@ type WorkerFactory interface {
 		config WorkerConfig, // the config used to initialize the worker.
 	) (framework.WorkerImpl, error)
 	DeserializeConfig(configBytes []byte) (WorkerConfig, error)
+	// IsRetryableError passes in an error to business logic, and returns whether
+	// job should be re-created or terminated permanently when meeting this error.
+	IsRetryableError(err error) bool
 }
 
 // WorkerConstructor alias to the function that can construct a WorkerImpl
@@ -81,7 +85,13 @@ func (f *SimpleWorkerFactory[T, C]) DeserializeConfig(configBytes []byte) (Worke
 	var config C
 	config = reflect.New(reflect.TypeOf(config).Elem()).Interface().(C)
 	if err := json.Unmarshal(configBytes, config); err != nil {
-		return nil, errors.Trace(err)
+		return nil, errors.Trace(fake.NewJobUnRetryableError(err))
 	}
 	return config, nil
+}
+
+// IsRetryableError implements WorkerFactory.IsRetryableError
+func (f *SimpleWorkerFactory[T, C]) IsRetryableError(err error) bool {
+	var errOut *fake.JobUnRetryableError
+	return !libErrors.As(err, &errOut)
 }

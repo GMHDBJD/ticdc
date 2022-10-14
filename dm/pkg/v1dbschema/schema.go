@@ -24,9 +24,7 @@ import (
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/errno"
 	"github.com/pingcap/tidb/util/dbutil"
-	"go.uber.org/zap"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
+	"github.com/pingcap/tiflow/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	"github.com/pingcap/tiflow/dm/pkg/binlog/reader"
 	"github.com/pingcap/tiflow/dm/pkg/conn"
@@ -36,6 +34,7 @@ import (
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
+	"go.uber.org/zap"
 )
 
 // UpdateSchema updates the DB schema from v1.0.x to v2.0.x, including:
@@ -82,8 +81,10 @@ func UpdateSchema(tctx *tcontext.Context, db *conn.BaseDB, cfg *config.SubTaskCo
 // - update table schema:
 //   - add column `binlog_gtid VARCHAR(256)`.
 //   - add column `table_info JSON NOT NULL`.
+//
 // - update column value:
 //   - fill `binlog_gtid` based on `binlog_name` and `binlog_pos` if GTID mode enable.
+//
 // NOTE: no need to update the value of `table_info` because DM can get schema automatically from downstream when replicating DML.
 func updateSyncerCheckpoint(tctx *tcontext.Context, dbConn *conn.BaseConn, taskName, tableName, sourceID string, fillGTIDs bool, tcpReader reader.Reader) error {
 	logger := log.L().WithFields(zap.String("task", taskName), zap.String("source", sourceID))

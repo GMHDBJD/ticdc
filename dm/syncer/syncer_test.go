@@ -25,8 +25,23 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pingcap/tiflow/dm/dm/config"
-	"github.com/pingcap/tiflow/dm/dm/pb"
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
+	"github.com/go-mysql-org/go-mysql/mysql"
+	"github.com/go-mysql-org/go-mysql/replication"
+	_ "github.com/go-sql-driver/mysql"
+	. "github.com/pingcap/check"
+	"github.com/pingcap/failpoint"
+	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
+	cm "github.com/pingcap/tidb-tools/pkg/column-mapping"
+	"github.com/pingcap/tidb/infoschema"
+	"github.com/pingcap/tidb/parser"
+	"github.com/pingcap/tidb/parser/ast"
+	pmysql "github.com/pingcap/tidb/parser/mysql"
+	"github.com/pingcap/tidb/util/filter"
+	regexprrouter "github.com/pingcap/tidb/util/regexpr-router"
+	router "github.com/pingcap/tidb/util/table-router"
+	"github.com/pingcap/tiflow/dm/config"
+	"github.com/pingcap/tiflow/dm/pb"
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	"github.com/pingcap/tiflow/dm/pkg/binlog/event"
 	"github.com/pingcap/tiflow/dm/pkg/binlog/reader"
@@ -46,31 +61,10 @@ import (
 	"github.com/pingcap/tiflow/pkg/errorutil"
 	"github.com/pingcap/tiflow/pkg/sqlmodel"
 	"github.com/stretchr/testify/require"
-
-	sqlmock "github.com/DATA-DOG/go-sqlmock"
-	"github.com/go-mysql-org/go-mysql/mysql"
-	"github.com/go-mysql-org/go-mysql/replication"
-	_ "github.com/go-sql-driver/mysql"
-	. "github.com/pingcap/check"
-	"github.com/pingcap/failpoint"
-	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
-	cm "github.com/pingcap/tidb-tools/pkg/column-mapping"
-	"github.com/pingcap/tidb/infoschema"
-	"github.com/pingcap/tidb/parser"
-	"github.com/pingcap/tidb/parser/ast"
-	pmysql "github.com/pingcap/tidb/parser/mysql"
-	"github.com/pingcap/tidb/util/filter"
-	regexprrouter "github.com/pingcap/tidb/util/regexpr-router"
-	router "github.com/pingcap/tidb/util/table-router"
 	"go.uber.org/zap"
 )
 
 var _ = Suite(&testSyncerSuite{})
-
-var defaultTestSessionCfg = map[string]string{
-	"sql_mode":             "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION",
-	"tidb_skip_utf8_check": "0",
-}
 
 func TestSuite(t *testing.T) {
 	TestingT(t)
@@ -129,7 +123,7 @@ type MockStreamProducer struct {
 	events []*replication.BinlogEvent
 }
 
-func (mp *MockStreamProducer) GenerateStreamer(location binlog.Location) (reader.Streamer, error) {
+func (mp *MockStreamProducer) GenerateStreamFrom(location binlog.Location) (reader.Streamer, error) {
 	if location.Position.Pos == 4 {
 		return &MockStreamer{mp.events, 0, false}, nil
 	}
@@ -273,6 +267,7 @@ func (s *testSyncerSuite) TestSelectDB(c *C) {
 	}
 
 	statusVars := []byte{4, 0, 0, 0, 0, 46, 0}
+	ddlWorker := NewDDLWorker(&syncer.tctx.Logger, syncer)
 	for _, cs := range cases {
 		e, err := event.GenQueryEvent(header, 123, 0, 0, 0, statusVars, cs.schema, cs.query)
 		c.Assert(err, IsNil)
@@ -287,7 +282,7 @@ func (s *testSyncerSuite) TestSelectDB(c *C) {
 			ddlSchema:       schema,
 			eventStatusVars: ev.StatusVars,
 		}
-		ddlInfo, err := syncer.genDDLInfo(qec, sql)
+		ddlInfo, err := ddlWorker.genDDLInfo(qec, sql)
 		c.Assert(err, IsNil)
 
 		qec.originSQL = sql
@@ -415,6 +410,7 @@ func (s *testSyncerSuite) TestIgnoreDB(c *C) {
 	c.Assert(syncer.genRouter(), IsNil)
 	i := 0
 
+	ddlWorker := NewDDLWorker(&syncer.tctx.Logger, syncer)
 	statusVars := []byte{4, 0, 0, 0, 0, 46, 0}
 	for _, e := range allEvents {
 		ev, ok := e.Event.(*replication.QueryEvent)
@@ -428,7 +424,7 @@ func (s *testSyncerSuite) TestIgnoreDB(c *C) {
 			ddlSchema:       schema,
 			eventStatusVars: statusVars,
 		}
-		ddlInfo, err := syncer.genDDLInfo(qec, sql)
+		ddlInfo, err := ddlWorker.genDDLInfo(qec, sql)
 		c.Assert(err, IsNil)
 
 		qec.originSQL = sql
@@ -779,7 +775,8 @@ func (s *testSyncerSuite) TestRun(c *C) {
 	cfg, err := s.cfg.Clone()
 	c.Assert(err, IsNil)
 	syncer := NewSyncer(cfg, nil, nil)
-	syncer.cfg.CheckpointFlushInterval = 30
+	syncer.cfg.CheckpointFlushInterval = 30 // defaultCheckpointFlushInterval
+	syncer.cfg.SafeModeDuration = "60s"     // defaultCheckpointFlushInterval * 2
 	syncer.fromDB = &dbconn.UpStreamConn{BaseDB: conn.NewBaseDB(db)}
 	syncer.toDBConns = []*dbconn.DBConn{
 		dbconn.NewDBConn(s.cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{})),
@@ -787,7 +784,7 @@ func (s *testSyncerSuite) TestRun(c *C) {
 	}
 	syncer.ddlDBConn = dbconn.NewDBConn(s.cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{}))
 	syncer.downstreamTrackConn = dbconn.NewDBConn(s.cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{}))
-	syncer.schemaTracker, err = schema.NewTestTracker(context.Background(), s.cfg.Name, defaultTestSessionCfg, syncer.downstreamTrackConn, log.L())
+	syncer.schemaTracker, err = schema.NewTestTracker(context.Background(), s.cfg.Name, syncer.downstreamTrackConn, log.L())
 	c.Assert(err, IsNil)
 
 	syncer.metricsProxies = metrics.DefaultMetricsProxies.CacheForOneTask("task", "worker", "source")
@@ -831,7 +828,7 @@ func (s *testSyncerSuite) TestRun(c *C) {
 	}
 
 	mockStreamerProducer := &MockStreamProducer{s.generateEvents(events1, c)}
-	mockStreamer, err := mockStreamerProducer.GenerateStreamer(binlog.MustZeroLocation(mysql.MySQLFlavor))
+	mockStreamer, err := mockStreamerProducer.GenerateStreamFrom(binlog.MustZeroLocation(mysql.MySQLFlavor))
 	c.Assert(err, IsNil)
 	syncer.streamerController = binlogstream.NewStreamerController4Test(
 		mockStreamerProducer,
@@ -846,6 +843,7 @@ func (s *testSyncerSuite) TestRun(c *C) {
 	}
 
 	syncer.handleJobFunc = syncer.addJobToMemory
+	syncer.ddlWorker = NewDDLWorker(&syncer.tctx.Logger, syncer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan pb.ProcessResult)
@@ -962,11 +960,6 @@ func (s *testSyncerSuite) TestRun(c *C) {
 	mockDBProvider.ExpectQuery("SELECT cast\\(TIMEDIFF\\(NOW\\(6\\), UTC_TIMESTAMP\\(6\\)\\) as time\\);").
 		WillReturnRows(sqlmock.NewRows([]string{""}).AddRow("01:00:00"))
 	mockGetServerUnixTS(mock)
-	mock.ExpectQuery("SHOW VARIABLES LIKE 'sql_mode'").WillReturnRows(
-		sqlmock.NewRows([]string{"Variable_name", "Value"}).AddRow("sql_mode", ""))
-	mock.ExpectQuery("SHOW CREATE TABLE " + "`test_1`.`t_2`").WillReturnRows(
-		sqlmock.NewRows([]string{"Table", "Create Table"}).
-			AddRow("t_2", "create table t_2(id int primary key, name varchar(24))"))
 	mock.ExpectBegin()
 	mock.ExpectExec(fmt.Sprintf("SET SESSION SQL_MODE = '%s'", pmysql.DefaultSQLMode)).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectCommit()
@@ -987,7 +980,7 @@ func (s *testSyncerSuite) TestRun(c *C) {
 	// simulate `syncer.Resume` here, but doesn't reset database conns
 	syncer.reset()
 	mockStreamerProducer = &MockStreamProducer{s.generateEvents(events2, c)}
-	mockStreamer, err = mockStreamerProducer.GenerateStreamer(binlog.MustZeroLocation(mysql.MySQLFlavor))
+	mockStreamer, err = mockStreamerProducer.GenerateStreamFrom(binlog.MustZeroLocation(mysql.MySQLFlavor))
 	c.Assert(err, IsNil)
 	syncer.streamerController = binlogstream.NewStreamerController4Test(
 		mockStreamerProducer,
@@ -1134,7 +1127,7 @@ func (s *testSyncerSuite) TestExitSafeModeByConfig(c *C) {
 		sqlmock.NewRows([]string{"Table", "Create Table"}).
 			AddRow("t_1", "create table t_1(id int primary key, name varchar(24))"))
 
-	syncer.schemaTracker, err = schema.NewTestTracker(context.Background(), s.cfg.Name, defaultTestSessionCfg, syncer.ddlDBConn, log.L())
+	syncer.schemaTracker, err = schema.NewTestTracker(context.Background(), s.cfg.Name, syncer.ddlDBConn, log.L())
 	c.Assert(err, IsNil)
 	c.Assert(syncer.Type(), Equals, pb.UnitType_Sync)
 
@@ -1175,7 +1168,7 @@ func (s *testSyncerSuite) TestExitSafeModeByConfig(c *C) {
 	generatedEvents = append(generatedEvents, generatedEvents2...)
 
 	mockStreamerProducer := &MockStreamProducer{generatedEvents}
-	mockStreamer, err := mockStreamerProducer.GenerateStreamer(binlog.MustZeroLocation(mysql.MySQLFlavor))
+	mockStreamer, err := mockStreamerProducer.GenerateStreamFrom(binlog.MustZeroLocation(mysql.MySQLFlavor))
 	c.Assert(err, IsNil)
 	syncer.streamerController = binlogstream.NewStreamerController4Test(
 		mockStreamerProducer,
@@ -1190,6 +1183,7 @@ func (s *testSyncerSuite) TestExitSafeModeByConfig(c *C) {
 	}
 
 	syncer.handleJobFunc = syncer.addJobToMemory
+	syncer.ddlWorker = NewDDLWorker(&syncer.tctx.Logger, syncer)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan pb.ProcessResult)
@@ -1199,7 +1193,7 @@ func (s *testSyncerSuite) TestExitSafeModeByConfig(c *C) {
 	checkPointMock.ExpectExec(".*INSERT INTO .* VALUES.* ON DUPLICATE KEY UPDATE.*").WillReturnResult(sqlmock.NewResult(0, 1))
 	checkPointMock.ExpectCommit()
 	// disable 1-minute safe mode
-	c.Assert(failpoint.Enable("github.com/pingcap/tiflow/dm/syncer/SafeModeInitPhaseSeconds", "return(0)"), IsNil)
+	c.Assert(failpoint.Enable("github.com/pingcap/tiflow/dm/syncer/SafeModeInitPhaseSeconds", `return("10ms")`), IsNil)
 	go syncer.Process(ctx, resultCh)
 	go func() {
 		for r := range resultCh {
@@ -1340,7 +1334,7 @@ func (s *testSyncerSuite) TestTrackDDL(c *C) {
 	}
 	syncer.ddlDBConn = dbconn.NewDBConn(s.cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{}))
 	syncer.checkpoint.(*RemoteCheckPoint).dbConn = dbconn.NewDBConn(s.cfg, conn.NewBaseConn(checkPointDBConn, &retry.FiniteRetryStrategy{}))
-	syncer.schemaTracker, err = schema.NewTestTracker(context.Background(), s.cfg.Name, defaultTestSessionCfg, syncer.ddlDBConn, log.L())
+	syncer.schemaTracker, err = schema.NewTestTracker(context.Background(), s.cfg.Name, syncer.ddlDBConn, log.L())
 	c.Assert(err, IsNil)
 	defer syncer.schemaTracker.Close()
 	syncer.exprFilterGroup = NewExprFilterGroup(tcontext.Background(), utils.NewSessionCtx(nil), nil)
@@ -1420,13 +1414,14 @@ func (s *testSyncerSuite) TestTrackDDL(c *C) {
 		}},
 	}
 
+	ddlWorker := NewDDLWorker(&syncer.tctx.Logger, syncer)
 	for _, ca := range cases {
-		ddlInfo, err := syncer.genDDLInfo(qec, ca.sql)
+		ddlInfo, err := ddlWorker.genDDLInfo(qec, ca.sql)
 		c.Assert(err, IsNil)
 		ca.callback()
 
 		c.Assert(syncer.trackDDL(testDB, ddlInfo, ec), IsNil)
-		c.Assert(syncer.schemaTracker.Reset(), IsNil)
+		syncer.schemaTracker.Reset()
 		c.Assert(mock.ExpectationsWereMet(), IsNil)
 		c.Assert(checkPointMock.ExpectationsWereMet(), IsNil)
 	}
@@ -1439,6 +1434,7 @@ func checkEventWithTableResult(c *C, syncer *Syncer, allEvents []*replication.Bi
 		tctx: tctx,
 	}
 	statusVars := []byte{4, 0, 0, 0, 0, 46, 0}
+	ddlWorker := NewDDLWorker(&syncer.tctx.Logger, syncer)
 	for _, e := range allEvents {
 		switch ev := e.Event.(type) {
 		case *replication.QueryEvent:
@@ -1458,7 +1454,7 @@ func checkEventWithTableResult(c *C, syncer *Syncer, allEvents []*replication.Bi
 			qec.splitDDLs, err = parserpkg.SplitDDL(stmt, qec.ddlSchema)
 			c.Assert(err, IsNil)
 			for _, sql := range qec.splitDDLs {
-				sqls, err := syncer.processOneDDL(qec, sql)
+				sqls, err := ddlWorker.processOneDDL(qec, sql)
 				c.Assert(err, IsNil)
 				qec.appliedDDLs = append(qec.appliedDDLs, sqls...)
 			}
@@ -1470,7 +1466,7 @@ func checkEventWithTableResult(c *C, syncer *Syncer, allEvents []*replication.Bi
 			}
 
 			for j, sql := range qec.appliedDDLs {
-				ddlInfo, err := syncer.genDDLInfo(qec, sql)
+				ddlInfo, err := ddlWorker.genDDLInfo(qec, sql)
 				c.Assert(err, IsNil)
 
 				needSkip, err := syncer.skipQueryEvent(qec, ddlInfo)
@@ -1646,6 +1642,14 @@ func (s *Syncer) setupMockCheckpoint(c *C, checkPointDBConn *sql.Conn, checkPoin
 	s.checkpoint.(*RemoteCheckPoint).globalPointSaveTime = time.Now()
 }
 
+func parseSQL(sql string) (ast.StmtNode, error) {
+	stmt, err := parser.New().ParseOneStmt(sql, "", "")
+	if err != nil {
+		return nil, err
+	}
+	return stmt, nil
+}
+
 func (s *testSyncerSuite) TestTrackDownstreamTableWontOverwrite(c *C) {
 	syncer := Syncer{}
 	ctx := context.Background()
@@ -1658,7 +1662,7 @@ func (s *testSyncerSuite) TestTrackDownstreamTableWontOverwrite(c *C) {
 	baseConn := conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{})
 	syncer.ddlDBConn = dbconn.NewDBConn(s.cfg, baseConn)
 	syncer.downstreamTrackConn = dbconn.NewDBConn(s.cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{}))
-	syncer.schemaTracker, err = schema.NewTestTracker(ctx, s.cfg.Name, defaultTestSessionCfg, syncer.downstreamTrackConn, log.L())
+	syncer.schemaTracker, err = schema.NewTestTracker(ctx, s.cfg.Name, syncer.downstreamTrackConn, log.L())
 	c.Assert(err, IsNil)
 	defer syncer.schemaTracker.Close()
 
@@ -1671,6 +1675,8 @@ func (s *testSyncerSuite) TestTrackDownstreamTableWontOverwrite(c *C) {
 		Name:   "down",
 	}
 	createTableSQL := "CREATE TABLE up (c1 int, c2 int);"
+	createTableStmt, err := parseSQL(createTableSQL)
+	c.Assert(err, IsNil)
 
 	mock.ExpectQuery("SHOW VARIABLES LIKE 'sql_mode'").WillReturnRows(
 		sqlmock.NewRows([]string{"Variable_name", "Value"}).AddRow("sql_mode", ""))
@@ -1679,7 +1685,7 @@ func (s *testSyncerSuite) TestTrackDownstreamTableWontOverwrite(c *C) {
 			AddRow(downTable.Name, " CREATE TABLE `"+downTable.Name+"` (\n  `c` int(11) DEFAULT NULL\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"))
 
 	c.Assert(syncer.schemaTracker.CreateSchemaIfNotExists(upTable.Schema), IsNil)
-	c.Assert(syncer.schemaTracker.Exec(ctx, "test", createTableSQL), IsNil)
+	c.Assert(syncer.schemaTracker.Exec(ctx, "test", createTableStmt), IsNil)
 	ti, err := syncer.getTableInfo(tctx, upTable, downTable)
 	c.Assert(err, IsNil)
 	c.Assert(ti.Columns, HasLen, 2)
@@ -1702,7 +1708,7 @@ func (s *testSyncerSuite) TestDownstreamTableHasAutoRandom(c *C) {
 	baseConn := conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{})
 	syncer.ddlDBConn = dbconn.NewDBConn(s.cfg, baseConn)
 	syncer.downstreamTrackConn = dbconn.NewDBConn(s.cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{}))
-	syncer.schemaTracker, err = schema.NewTestTracker(ctx, s.cfg.Name, defaultTestSessionCfg, syncer.downstreamTrackConn, log.L())
+	syncer.schemaTracker, err = schema.NewTestTracker(ctx, s.cfg.Name, syncer.downstreamTrackConn, log.L())
 	c.Assert(err, IsNil)
 
 	schemaName := "test"
@@ -1718,7 +1724,6 @@ func (s *testSyncerSuite) TestDownstreamTableHasAutoRandom(c *C) {
 	mock.ExpectQuery("SHOW CREATE TABLE.*").WillReturnRows(
 		sqlmock.NewRows([]string{"Table", "Create Table"}).
 			AddRow(tableName, " CREATE TABLE `"+tableName+"` (\n  `c` bigint(20) NOT NULL /*T![auto_rand] AUTO_RANDOM(5) */,\n  PRIMARY KEY (`c`)\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_bin"))
-
 	c.Assert(syncer.schemaTracker.CreateSchemaIfNotExists(schemaName), IsNil)
 	c.Assert(syncer.trackTableInfoFromDownstream(tctx, table, table), IsNil)
 	ti, err := syncer.getTableInfo(tctx, table, table)
@@ -1727,7 +1732,9 @@ func (s *testSyncerSuite) TestDownstreamTableHasAutoRandom(c *C) {
 
 	c.Assert(syncer.schemaTracker.DropTable(table), IsNil)
 	sql := "create table tbl (c bigint primary key);"
-	c.Assert(syncer.schemaTracker.Exec(ctx, schemaName, sql), IsNil)
+	stmt, err := parseSQL(sql)
+	c.Assert(err, IsNil)
+	c.Assert(syncer.schemaTracker.Exec(ctx, schemaName, stmt), IsNil)
 	ti2, err := syncer.getTableInfo(tctx, table, table)
 	c.Assert(err, IsNil)
 
@@ -1736,19 +1743,10 @@ func (s *testSyncerSuite) TestDownstreamTableHasAutoRandom(c *C) {
 
 	c.Assert(ti, DeepEquals, ti2)
 
-	// test if user set ON clustered index, no need to modify
-	sessionCfg := map[string]string{
-		"sql_mode":                "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION",
-		"tidb_skip_utf8_check":    "0",
-		schema.TiDBClusteredIndex: "ON",
-	}
-	c.Assert(syncer.schemaTracker.Close(), IsNil)
-	syncer.schemaTracker, err = schema.NewTestTracker(ctx, s.cfg.Name, sessionCfg, syncer.downstreamTrackConn, log.L())
+	syncer.schemaTracker.Close()
+	syncer.schemaTracker, err = schema.NewTestTracker(ctx, s.cfg.Name, syncer.downstreamTrackConn, log.L())
 	c.Assert(err, IsNil)
 	defer syncer.schemaTracker.Close()
-	v, ok := syncer.schemaTracker.GetSystemVar(schema.TiDBClusteredIndex)
-	c.Assert(v, Equals, "ON")
-	c.Assert(ok, IsTrue)
 
 	mock.ExpectQuery("SHOW VARIABLES LIKE 'sql_mode'").WillReturnRows(
 		sqlmock.NewRows([]string{"Variable_name", "Value"}).AddRow("sql_mode", ""))
@@ -1763,9 +1761,12 @@ func (s *testSyncerSuite) TestDownstreamTableHasAutoRandom(c *C) {
 	c.Assert(err, IsNil)
 	c.Assert(mock.ExpectationsWereMet(), IsNil)
 
+	// check trackTableInfoFromDownstream with AUTO_RANDOM is same as no AUTO_RANDOM
 	c.Assert(syncer.schemaTracker.DropTable(table), IsNil)
-	sql = "create table tbl (c bigint primary key auto_random);"
-	c.Assert(syncer.schemaTracker.Exec(ctx, schemaName, sql), IsNil)
+	sql = "create table tbl (c bigint primary key);"
+	stmt, err = parseSQL(sql)
+	c.Assert(err, IsNil)
+	c.Assert(syncer.schemaTracker.Exec(ctx, schemaName, stmt), IsNil)
 	ti2, err = syncer.getTableInfo(tctx, table, table)
 	c.Assert(err, IsNil)
 
@@ -1798,7 +1799,7 @@ func (s *testSyncerSuite) TestExecuteSQLSWithIgnore(c *C) {
 	tctx := tcontext.Background().WithLogger(log.With(zap.String("test", "TestExecuteSQLSWithIgnore")))
 	n, err := conn.ExecuteSQLWithIgnore(tctx, nil, errorutil.IsIgnorableMySQLDDLError, sqls)
 	c.Assert(err, IsNil)
-	c.Assert(n, Equals, 2)
+	c.Assert(n, Equals, 1)
 
 	// will return error when execute the first sql
 	mock.ExpectBegin()
@@ -1860,7 +1861,7 @@ func TestWaitBeforeRunExit(t *testing.T) {
 	require.NoError(t, syncer.genRouter())
 
 	mockStreamerProducer := &MockStreamProducer{}
-	mockStreamer, err := mockStreamerProducer.GenerateStreamer(binlog.MustZeroLocation(mysql.MySQLFlavor))
+	mockStreamer, err := mockStreamerProducer.GenerateStreamFrom(binlog.MustZeroLocation(mysql.MySQLFlavor))
 	require.NoError(t, err)
 	// let getEvent pending until ctx.Done()
 	mockStreamer.(*MockStreamer).pending = true
@@ -1925,7 +1926,7 @@ func TestSyncerGetTableInfo(t *testing.T) {
 	baseConn := conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{})
 	syncer.ddlDBConn = dbconn.NewDBConn(cfg, baseConn)
 	syncer.downstreamTrackConn = dbconn.NewDBConn(cfg, conn.NewBaseConn(dbConn, &retry.FiniteRetryStrategy{}))
-	syncer.schemaTracker, err = schema.NewTestTracker(ctx, cfg.Name, defaultTestSessionCfg, syncer.downstreamTrackConn, log.L())
+	syncer.schemaTracker, err = schema.NewTestTracker(ctx, cfg.Name, syncer.downstreamTrackConn, log.L())
 	require.NoError(t, err)
 	defer syncer.schemaTracker.Close()
 

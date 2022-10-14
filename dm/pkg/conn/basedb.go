@@ -17,6 +17,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"sync"
@@ -26,14 +27,13 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/tidb/util"
-	"go.uber.org/zap"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
+	"github.com/pingcap/tiflow/dm/config"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/retry"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
+	"go.uber.org/zap"
 )
 
 var customID int64
@@ -59,23 +59,22 @@ func init() {
 func (d *DefaultDBProviderImpl) Apply(config *config.DBConfig) (*BaseDB, error) {
 	// maxAllowedPacket=0 can be used to automatically fetch the max_allowed_packet variable from server on every connection.
 	// https://github.com/go-sql-driver/mysql#maxallowedpacket
-	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/?charset=utf8mb4&interpolateParams=true&maxAllowedPacket=0",
-		config.User, config.Password, config.Host, config.Port)
+	hostPort := net.JoinHostPort(config.Host, strconv.Itoa(config.Port))
+	dsn := fmt.Sprintf("%s:%s@tcp(%s)/?charset=utf8mb4&interpolateParams=true&maxAllowedPacket=0",
+		config.User, config.Password, hostPort)
 
 	doFuncInClose := func() {}
 	if config.Security != nil {
 		if loadErr := config.Security.LoadTLSContent(); loadErr != nil {
 			return nil, terror.ErrCtlLoadTLSCfg.Delegate(loadErr)
 		}
-		tlsConfig, err := util.ToTLSConfigWithVerifyByRawbytes(config.Security.SSLCABytes,
-			config.Security.SSLCertBytes, config.Security.SSLKEYBytes, config.Security.CertAllowedCN)
+		tlsConfig, err := util.NewTLSConfig(
+			util.WithCAContent(config.Security.SSLCABytes),
+			util.WithCertAndKeyContent(config.Security.SSLCertBytes, config.Security.SSLKeyBytes),
+			util.WithVerifyCommonName(config.Security.CertAllowedCN),
+		)
 		if err != nil {
 			return nil, terror.ErrConnInvalidTLSConfig.Delegate(err)
-		}
-		// NOTE for local test(use a self-signed or invalid certificate), we don't need to check CA file.
-		// see more here https://github.com/go-sql-driver/mysql#tls
-		if config.Host == "127.0.0.1" || len(config.Security.SSLCertBytes) == 0 || len(config.Security.SSLKEYBytes) == 0 {
-			tlsConfig.InsecureSkipVerify = true
 		}
 
 		name := "dm" + strconv.FormatInt(atomic.AddInt64(&customID, 1), 10)

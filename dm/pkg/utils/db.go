@@ -31,10 +31,9 @@ import (
 	"github.com/pingcap/tidb/parser"
 	tmysql "github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/util/dbutil"
-	"go.uber.org/zap"
-
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
+	"go.uber.org/zap"
 )
 
 const (
@@ -343,6 +342,11 @@ func IsMySQLError(err error, code uint16) bool {
 	return ok && e.Number == code
 }
 
+// IsErrDuplicateEntry checks whether err is DuplicateEntry error.
+func IsErrDuplicateEntry(err error) bool {
+	return IsMySQLError(err, tmysql.ErrDupEntry)
+}
+
 // IsErrBinlogPurged checks whether err is BinlogPurged error.
 func IsErrBinlogPurged(err error) bool {
 	return IsMySQLError(err, tmysql.ErrMasterFatalErrorReadingBinlog)
@@ -361,7 +365,7 @@ func GetGTIDMode(ctx context.Context, db *sql.DB) (string, error) {
 
 // ExtractTiDBVersion extract tidb's version
 // version format: "5.7.25-TiDB-v3.0.0-beta-211-g09beefbe0-dirty"
-//                               ^~~~~~~~~^
+// -                            ^..........
 func ExtractTiDBVersion(version string) (*semver.Version, error) {
 	versions := strings.Split(strings.TrimSuffix(version, "-dirty"), "-")
 	end := len(versions)

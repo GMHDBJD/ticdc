@@ -18,12 +18,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/pingcap/tidb/parser"
-
 	"github.com/go-mysql-org/go-mysql/replication"
+	"github.com/pingcap/tidb/parser"
 	"github.com/pingcap/tidb/parser/ast"
-
-	"github.com/pingcap/tiflow/dm/dm/pb"
+	"github.com/pingcap/tiflow/dm/pb"
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	parserpkg "github.com/pingcap/tiflow/dm/pkg/parser"
 	"github.com/pingcap/tiflow/dm/pkg/terror"

@@ -17,12 +17,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"go.uber.org/zap"
-
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
+	"go.uber.org/zap"
 )
 
 // FileCmp is a compare condition used when collecting binlog files.
@@ -121,10 +120,11 @@ func getFirstBinlogName(baseDir, uuid string) (string, error) {
 
 // fileSizeUpdated checks whether the file's size has updated
 // return
-//   0: not updated
-//   1: update to larger
-//  -1: update to smaller, only happens in special case, for example we change
-//      relay.meta manually and start task before relay log catches up.
+//
+//	 0: not updated
+//	 1: update to larger
+//	-1: update to smaller, only happens in special case, for example we change
+//	    relay.meta manually and start task before relay log catches up.
 func fileSizeUpdated(path string, latestSize int64) (int, error) {
 	fi, err := os.Stat(path)
 	if err != nil {

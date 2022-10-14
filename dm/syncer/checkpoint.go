@@ -24,10 +24,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tiflow/dm/syncer/metrics"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
+	"github.com/pingcap/failpoint"
+	"github.com/pingcap/tidb/parser/model"
+	tmysql "github.com/pingcap/tidb/parser/mysql"
+	"github.com/pingcap/tidb/util/dbutil"
+	"github.com/pingcap/tidb/util/filter"
+	"github.com/pingcap/tiflow/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	"github.com/pingcap/tiflow/dm/pkg/conn"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
@@ -41,13 +45,7 @@ import (
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
 	"github.com/pingcap/tiflow/dm/syncer/dbconn"
-
-	"github.com/go-mysql-org/go-mysql/mysql"
-	"github.com/pingcap/failpoint"
-	"github.com/pingcap/tidb/parser/model"
-	tmysql "github.com/pingcap/tidb/parser/mysql"
-	"github.com/pingcap/tidb/util/dbutil"
-	"github.com/pingcap/tidb/util/filter"
+	"github.com/pingcap/tiflow/dm/syncer/metrics"
 	"github.com/uber-go/atomic"
 	"go.uber.org/zap"
 )
@@ -79,7 +77,7 @@ func (t *tablePoint) writeString(buf io.Writer) {
 	}
 	fmt.Fprintf(buf, "location(%s)", t.location)
 	if t.ti != nil {
-		fmt.Fprintf(buf, ", tableInfo(ID: %d, Name:%s, ColNum: %d, IdxNum: %d, PKIsHandle: %t)", t.ti.ID, t.ti.Name, len(t.ti.Columns), len(t.ti.Indices), t.ti.PKIsHandle)
+		fmt.Fprintf(buf, ", tableInfo(Name:%s, ColNum: %d, IdxNum: %d, PKIsHandle: %t)", t.ti.Name, len(t.ti.Columns), len(t.ti.Indices), t.ti.PKIsHandle)
 	}
 }
 
@@ -163,7 +161,6 @@ func (b *binlogPoint) rollback() {
 	if b.savedPoint.ti != b.flushedPoint.ti {
 		b.savedPoint.ti = b.flushedPoint.ti
 	}
-	return
 }
 
 func (b *binlogPoint) outOfDate() bool {
@@ -204,7 +201,7 @@ func (b *binlogPoint) String() string {
 
 	var buf strings.Builder
 	b.savedPoint.writeString(&buf)
-	buf.WriteString("(flushed ")
+	buf.WriteString(" (flushed ")
 	b.flushedPoint.writeString(&buf)
 	buf.WriteString(")")
 
@@ -422,7 +419,16 @@ func (cp *RemoteCheckPoint) Snapshot(isSyncFlush bool) *SnapshotInfo {
 		}
 	}
 
-	flushGlobalPoint := cp.globalPoint.outOfDate() || cp.globalPointSaveTime.IsZero() || (isSyncFlush && cp.needFlushSafeModeExitPoint.Load())
+	// flush when
+	// - global checkpoint is forwarded
+	// - global checkpoint is not forwarded but binlog filename updated. This may happen when upstream switched or relay
+	//   enable/disable in GTID replication
+	// - the first time to flush checkpoint
+	// - need update safe mode exit point
+	flushGlobalPoint := cp.globalPoint.outOfDate() ||
+		cp.globalPoint.savedPoint.location.Position.Name != cp.globalPoint.flushedPoint.location.Position.Name ||
+		cp.globalPointSaveTime.IsZero() ||
+		(isSyncFlush && cp.needFlushSafeModeExitPoint.Load())
 
 	// if there is no change on both table points and global point, just return an empty snapshot
 	if len(tableCheckPoints) == 0 && !flushGlobalPoint {
@@ -638,11 +644,11 @@ func (cp *RemoteCheckPoint) DeleteSchemaPoint(tctx *tcontext.Context, sourceSche
 
 // IsOlderThanTablePoint implements CheckPoint.IsOlderThanTablePoint.
 // This function is used to skip old binlog events. Table checkpoint is saved after dispatching a binlog event.
-// - For GTID based and position based replication, DML handling is a bit different but comparison is same here.
-//   When using position based, each event has unique position so we have confident to skip event which is <= table checkpoint.
-//   When using GTID based, there may be more than one event with same GTID, but we still skip event which is <= table checkpoint,
-//   to make this right we only save table point for the transaction affected tables only after the whole transaction is processed
-// - DDL will not have unique position or GTID, so we can always skip events <= table checkpoint.
+//   - For GTID based and position based replication, DML handling is a bit different but comparison is same here.
+//     When using position based, each event has unique position so we have confident to skip event which is <= table checkpoint.
+//     When using GTID based, there may be more than one event with same GTID, but we still skip event which is <= table checkpoint,
+//     to make this right we only save table point for the transaction affected tables only after the whole transaction is processed
+//   - DDL will not have unique position or GTID, so we can always skip events <= table checkpoint.
 func (cp *RemoteCheckPoint) IsOlderThanTablePoint(table *filter.Table, location binlog.Location) bool {
 	cp.RLock()
 	defer cp.RUnlock()
@@ -714,13 +720,6 @@ func (cp *RemoteCheckPoint) FlushPointsExcept(
 	sqls := make([]string, 0, 100)
 	args := make([][]interface{}, 0, 100)
 
-	if snapshotCp.globalPoint != nil {
-		locationG := snapshotCp.globalPoint.location
-		sqlG, argG := cp.genUpdateSQL(globalCpSchema, globalCpTable, locationG, cp.safeModeExitPoint, nil, true)
-		sqls = append(sqls, sqlG)
-		args = append(args, argG)
-	}
-
 	type tableCpSnapshotTuple struct {
 		tableCp         *binlogPoint // current table checkpoint location
 		snapshotTableCP tablePoint   // table checkpoint snapshot location
@@ -759,12 +758,21 @@ func (cp *RemoteCheckPoint) FlushPointsExcept(
 		args = append(args, extraArgs[i])
 	}
 
+	// updating global checkpoint should be the last SQL, its success indicates
+	// the checkpoint is flushed successfully.
+	if snapshotCp.globalPoint != nil {
+		locationG := snapshotCp.globalPoint.location
+		sqlG, argG := cp.genUpdateSQL(globalCpSchema, globalCpTable, locationG, cp.safeModeExitPoint, nil, true)
+		sqls = append(sqls, sqlG)
+		args = append(args, argG)
+	}
+
 	cp.Unlock()
 
 	// use a new context apart from syncer, to make sure when syncer call `cancel` checkpoint could update
 	tctx2, cancel := tctx.WithContext(context.Background()).WithTimeout(maxDMLConnectionDuration)
 	defer cancel()
-	_, err := cp.dbConn.ExecuteSQL(tctx2, cp.metricProxies, sqls, args...)
+	err := cp.dbConn.ExecuteSQLAutoSplit(tctx2, cp.metricProxies, sqls, args...)
 	if err != nil {
 		return err
 	}

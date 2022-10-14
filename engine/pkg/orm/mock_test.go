@@ -15,12 +15,14 @@ package orm
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
 
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
-	resourcemeta "github.com/pingcap/tiflow/engine/pkg/externalresource/resourcemeta/model"
+	engineModel "github.com/pingcap/tiflow/engine/model"
+	resModel "github.com/pingcap/tiflow/engine/pkg/externalresource/model"
 	"github.com/pingcap/tiflow/engine/pkg/orm/model"
 	"github.com/pingcap/tiflow/pkg/errors"
 	"github.com/stretchr/testify/require"
@@ -42,29 +44,6 @@ func TestGenEpochMock(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.Equal(t, int64(11), epoch)
-
-	// Being a lightweight database, SQLite can’t handle a high level of concurrency
-	// NOTICE: Not Recommend to do high concurrenct test in unit test
-	// TODO: we can add retry for sqlite error 'database table is lock' later
-	/*
-		var wg sync.WaitGroup
-		for i := 0; i < 10; i++ {
-			wg.Add(1)
-			go func(idx int) {
-				t.Logf("goroutine:%d", idx)
-				defer wg.Done()
-				for j := 0; j < 10; j++ {
-					_, err := mock.GenEpoch(ctx)
-					require.NoError(t, err)
-				}
-			}(i)
-		}
-		wg.Wait()
-		t.Logf("end the concurrency")
-		epoch, err = mock.GenEpoch(ctx)
-		require.NoError(t, err)
-		require.Equal(t, 112, int(epoch))
-	*/
 }
 
 type mCase struct {
@@ -80,17 +59,6 @@ func TestInitializeMock(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, cli)
 	defer cli.Close()
-
-	testCases := []mCase{
-		{
-			fn:     "Initialize",
-			inputs: []interface{}{},
-		},
-	}
-
-	for _, tc := range testCases {
-		testInnerMock(t, cli, tc)
-	}
 }
 
 func TestProjectMock(t *testing.T) {
@@ -98,9 +66,6 @@ func TestProjectMock(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, cli)
 	defer cli.Close()
-
-	err = cli.Initialize(context.TODO())
-	require.Nil(t, err)
 
 	tm := time.Now()
 	createdAt := tm.Add(time.Duration(1))
@@ -200,9 +165,6 @@ func TestProjectOperationMock(t *testing.T) {
 	require.NotNil(t, cli)
 	defer cli.Close()
 
-	err = cli.Initialize(context.TODO())
-	require.Nil(t, err)
-
 	tm := time.Now()
 	tm1 := tm.Add(time.Second * 10)
 	tm2 := tm.Add(time.Second)
@@ -287,9 +249,6 @@ func TestJobMock(t *testing.T) {
 	require.NotNil(t, cli)
 	defer cli.Close()
 
-	err = cli.Initialize(context.TODO())
-	require.Nil(t, err)
-
 	tm := time.Now()
 	createdAt := tm.Add(time.Duration(1))
 	updatedAt := tm.Add(time.Duration(1))
@@ -298,33 +257,33 @@ func TestJobMock(t *testing.T) {
 		{
 			fn: "UpsertJob",
 			inputs: []interface{}{
-				&frameModel.MasterMetaKVData{
+				&frameModel.MasterMeta{
 					Model: model.Model{
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:  "p111",
-					ID:         "j111",
-					Tp:         1,
-					NodeID:     "n111",
-					Epoch:      1,
-					StatusCode: 1,
-					Addr:       "127.0.0.1",
-					Config:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					ID:        "j111",
+					Type:      1,
+					NodeID:    "n111",
+					Epoch:     1,
+					State:     1,
+					Addr:      "127.0.0.1",
+					Config:    []byte{0x11, 0x22},
 				},
 			},
 		},
 		{
 			fn: "UpsertJob",
 			inputs: []interface{}{
-				&frameModel.MasterMetaKVData{
-					ProjectID:  "p111",
-					ID:         "j111",
-					Tp:         1,
-					NodeID:     "n111",
-					Epoch:      1,
-					StatusCode: 2,
-					Addr:       "127.0.0.1",
+				&frameModel.MasterMeta{
+					ProjectID: "p111",
+					ID:        "j111",
+					Type:      1,
+					NodeID:    "n111",
+					Epoch:     1,
+					State:     2,
+					Addr:      "127.0.0.1",
 				},
 			},
 		},
@@ -338,7 +297,7 @@ func TestJobMock(t *testing.T) {
 			},
 		},
 		{
-			// DELETE FROM `master_meta_kv_data` WHERE project_id = '111-222-334' AND job_id = '111'
+			// DELETE FROM `master_meta` WHERE project_id = '111-222-334' AND job_id = '111'
 			fn: "DeleteJob",
 			inputs: []interface{}{
 				"j113",
@@ -348,25 +307,25 @@ func TestJobMock(t *testing.T) {
 			},
 		},
 		{
-			// SELECT * FROM `master_meta_kv_data` WHERE project_id = '111-222-333' AND job_id = '111' ORDER BY `master_meta_kv_data`.`id` LIMIT 1
+			// SELECT * FROM `master_meta` WHERE project_id = '111-222-333' AND job_id = '111' ORDER BY `master_meta`.`id` LIMIT 1
 			fn: "GetJobByID",
 			inputs: []interface{}{
 				"j111",
 			},
-			output: &frameModel.MasterMetaKVData{
+			output: &frameModel.MasterMeta{
 				Model: model.Model{
 					SeqID:     1,
 					CreatedAt: createdAt,
 					UpdatedAt: updatedAt,
 				},
-				ProjectID:  "p111",
-				ID:         "j111",
-				Tp:         1,
-				NodeID:     "n111",
-				Epoch:      1,
-				StatusCode: 2,
-				Addr:       "127.0.0.1",
-				Config:     []byte{0x11, 0x22},
+				ProjectID: "p111",
+				ID:        "j111",
+				Type:      1,
+				NodeID:    "n111",
+				Epoch:     1,
+				State:     2,
+				Addr:      "127.0.0.1",
+				Config:    []byte{0x11, 0x22},
 			},
 		},
 		{
@@ -377,26 +336,26 @@ func TestJobMock(t *testing.T) {
 			err: errors.ErrMetaEntryNotFound.GenWithStackByArgs(),
 		},
 		{
-			// SELECT * FROM `master_meta_kv_data` WHERE project_id = '111-222-333'
+			// SELECT * FROM `master_meta` WHERE project_id = '111-222-333'
 			fn: "QueryJobsByProjectID",
 			inputs: []interface{}{
 				"p111",
 			},
-			output: []*frameModel.MasterMetaKVData{
+			output: []*frameModel.MasterMeta{
 				{
 					Model: model.Model{
 						SeqID:     1,
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:  "p111",
-					ID:         "j111",
-					Tp:         1,
-					NodeID:     "n111",
-					Epoch:      1,
-					StatusCode: 2,
-					Addr:       "1.1.1.1",
-					Config:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					ID:        "j111",
+					Type:      1,
+					NodeID:    "n111",
+					Epoch:     1,
+					State:     2,
+					Addr:      "1.1.1.1",
+					Config:    []byte{0x11, 0x22},
 				},
 			},
 		},
@@ -405,40 +364,40 @@ func TestJobMock(t *testing.T) {
 			inputs: []interface{}{
 				"p113",
 			},
-			output: []*frameModel.MasterMetaKVData{},
+			output: []*frameModel.MasterMeta{},
 		},
 		{
-			//  SELECT * FROM `master_meta_kv_data` WHERE project_id = '111-222-333' AND job_status = 1
-			fn: "QueryJobsByStatus",
+			//  SELECT * FROM `master_meta` WHERE project_id = '111-222-333' AND job_status = 1
+			fn: "QueryJobsByState",
 			inputs: []interface{}{
 				"j111",
 				2,
 			},
-			output: []*frameModel.MasterMetaKVData{
+			output: []*frameModel.MasterMeta{
 				{
 					Model: model.Model{
 						SeqID:     1,
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:  "p111",
-					ID:         "j111",
-					Tp:         1,
-					NodeID:     "n111",
-					Epoch:      1,
-					StatusCode: 2,
-					Addr:       "127.0.0.1",
-					Config:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					ID:        "j111",
+					Type:      1,
+					NodeID:    "n111",
+					Epoch:     1,
+					State:     2,
+					Addr:      "127.0.0.1",
+					Config:    []byte{0x11, 0x22},
 				},
 			},
 		},
 		{
-			fn: "QueryJobsByStatus",
+			fn: "QueryJobsByState",
 			inputs: []interface{}{
 				"j113",
 				1,
 			},
-			output: []*frameModel.MasterMetaKVData{},
+			output: []*frameModel.MasterMeta{},
 		},
 	}
 
@@ -452,9 +411,6 @@ func TestWorkerMock(t *testing.T) {
 	require.Nil(t, err)
 	require.NotNil(t, cli)
 	defer cli.Close()
-
-	err = cli.Initialize(context.TODO())
-	require.Nil(t, err)
 
 	tm := time.Now()
 	createdAt := tm.Add(time.Duration(1))
@@ -472,13 +428,13 @@ func TestWorkerMock(t *testing.T) {
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:    "p111",
-					JobID:        "j111",
-					ID:           "w222",
-					Type:         1,
-					Code:         1,
-					ErrorMessage: "error",
-					ExtBytes:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					JobID:     "j111",
+					ID:        "w222",
+					Type:      1,
+					State:     1,
+					ErrorMsg:  "error",
+					ExtBytes:  []byte{0x11, 0x22},
 				},
 			},
 		},
@@ -490,13 +446,13 @@ func TestWorkerMock(t *testing.T) {
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:    "p111",
-					JobID:        "j111",
-					ID:           "w224",
-					Type:         1,
-					Code:         1,
-					ErrorMessage: "error",
-					ExtBytes:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					JobID:     "j111",
+					ID:        "w224",
+					Type:      1,
+					State:     1,
+					ErrorMsg:  "error",
+					ExtBytes:  []byte{0x11, 0x22},
 				},
 			},
 		},
@@ -535,13 +491,13 @@ func TestWorkerMock(t *testing.T) {
 					CreatedAt: createdAt,
 					UpdatedAt: updatedAt,
 				},
-				ProjectID:    "p111",
-				JobID:        "j111",
-				ID:           "w222",
-				Type:         1,
-				Code:         1,
-				ErrorMessage: "error",
-				ExtBytes:     []byte{0x11, 0x22},
+				ProjectID: "p111",
+				JobID:     "j111",
+				ID:        "w222",
+				Type:      1,
+				State:     1,
+				ErrorMsg:  "error",
+				ExtBytes:  []byte{0x11, 0x22},
 			},
 		},
 		{
@@ -565,13 +521,13 @@ func TestWorkerMock(t *testing.T) {
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:    "p111",
-					JobID:        "j111",
-					ID:           "w222",
-					Type:         1,
-					Code:         1,
-					ErrorMessage: "error",
-					ExtBytes:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					JobID:     "j111",
+					ID:        "w222",
+					Type:      1,
+					State:     1,
+					ErrorMsg:  "error",
+					ExtBytes:  []byte{0x11, 0x22},
 				},
 			},
 		},
@@ -584,7 +540,7 @@ func TestWorkerMock(t *testing.T) {
 		},
 		{
 			// SELECT * FROM `worker_statuses` WHERE project_id = '111-222-333' AND job_id = '111' AND worker_statuses = 1
-			fn: "QueryWorkersByStatus",
+			fn: "QueryWorkersByState",
 			inputs: []interface{}{
 				"j111",
 				1,
@@ -596,18 +552,18 @@ func TestWorkerMock(t *testing.T) {
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
 					},
-					ProjectID:    "p111",
-					JobID:        "j111",
-					ID:           "w222",
-					Type:         1,
-					Code:         1,
-					ErrorMessage: "error",
-					ExtBytes:     []byte{0x11, 0x22},
+					ProjectID: "p111",
+					JobID:     "j111",
+					ID:        "w222",
+					Type:      1,
+					State:     1,
+					ErrorMsg:  "error",
+					ExtBytes:  []byte{0x11, 0x22},
 				},
 			},
 		},
 		{
-			fn: "QueryWorkersByStatus",
+			fn: "QueryWorkersByState",
 			inputs: []interface{}{
 				"j111",
 				4,
@@ -627,9 +583,6 @@ func TestResourceMock(t *testing.T) {
 	require.NotNil(t, cli)
 	defer cli.Close()
 
-	err = cli.Initialize(context.TODO())
-	require.Nil(t, err)
-
 	tm := time.Now()
 	createdAt := tm.Add(time.Duration(1))
 	updatedAt := tm.Add(time.Duration(1))
@@ -638,7 +591,7 @@ func TestResourceMock(t *testing.T) {
 		{
 			fn: "UpsertResource",
 			inputs: []interface{}{
-				&resourcemeta.ResourceMeta{
+				&resModel.ResourceMeta{
 					Model: model.Model{
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
@@ -655,7 +608,7 @@ func TestResourceMock(t *testing.T) {
 		{
 			fn: "UpsertResource",
 			inputs: []interface{}{
-				&resourcemeta.ResourceMeta{
+				&resModel.ResourceMeta{
 					Model: model.Model{
 						CreatedAt: createdAt,
 						UpdatedAt: updatedAt,
@@ -701,7 +654,7 @@ func TestResourceMock(t *testing.T) {
 					ID:    "r333",
 				},
 			},
-			output: &resourcemeta.ResourceMeta{
+			output: &resModel.ResourceMeta{
 				Model: model.Model{
 					SeqID:     1,
 					CreatedAt: createdAt,
@@ -730,7 +683,7 @@ func TestResourceMock(t *testing.T) {
 			inputs: []interface{}{
 				"j111",
 			},
-			output: []*resourcemeta.ResourceMeta{
+			output: []*resModel.ResourceMeta{
 				{
 					Model: model.Model{
 						SeqID:     1,
@@ -751,14 +704,14 @@ func TestResourceMock(t *testing.T) {
 			inputs: []interface{}{
 				"j112",
 			},
-			output: []*resourcemeta.ResourceMeta{},
+			output: []*resModel.ResourceMeta{},
 		},
 		{
-			fn: "QueryResourcesByExecutorID",
+			fn: "QueryResourcesByExecutorIDs",
 			inputs: []interface{}{
-				"e444",
+				engineModel.ExecutorID("e444"),
 			},
-			output: []*resourcemeta.ResourceMeta{
+			output: []*resModel.ResourceMeta{
 				{
 					Model: model.Model{
 						SeqID:     1,
@@ -775,15 +728,16 @@ func TestResourceMock(t *testing.T) {
 			},
 		},
 		{
-			fn: "QueryResourcesByExecutorID",
+			fn: "QueryResourcesByExecutorIDs",
 			inputs: []interface{}{
-				"e445",
+				engineModel.ExecutorID("e444"),
 			},
-			output: []*resourcemeta.ResourceMeta{},
+			output: []*resModel.ResourceMeta{},
 		},
 	}
 
 	for _, tc := range testCases {
+		fmt.Println("testing", tc.fn)
 		testInnerMock(t, cli, tc)
 	}
 }
@@ -810,18 +764,8 @@ func testInnerMock(t *testing.T, cli Client, c mCase) {
 		// result and error
 		if c.err != nil {
 			require.NotNil(t, result[1].Interface())
-			// FIXME:
-			// var args []reflect.Value
-			// require.NotNil(t, reflect.ValueOf(c.err).Interface())
-			// require.NotNil(t, result[1].MethodByName("Isxxx").Interface())
-			// args = append(args, reflect.ValueOf(c.err))
-			// res := result[1].MethodByName("Is").Call(args)
-			// require.True(t, res[0].Interface().(bool))
 		} else {
 			require.NotNil(t, result[0].Interface())
-			// log.Info("result", zap.Any("expect", c.output), zap.Any("actual", result[0].Interface()))
-			// FIXME: datetime is different from what we insert. Why??
-			// require.Equal(t, c.output, result[0].Interface())
 		}
 	}
 }

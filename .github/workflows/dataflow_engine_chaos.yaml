@@ -20,8 +20,8 @@ jobs:
   # This workflow contains a single job called "base"
   base:
     # The type of runner that the job will run on
-    runs-on: ubuntu-18.04
-    timeout-minutes: 30
+    runs-on: ubuntu-20.04
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -38,9 +38,15 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - name: check out code by workerflow dispatch PR
+        if: ${{ github.event.inputs.pr != '' }}
+        uses: actions/checkout@v2
+        with:
+          ref: refs/pull/${{ github.event.inputs.pr }}/head
+
       - uses: actions/setup-go@v3
         with:
-          go-version: 1.18
+          go-version: 1.19
 
       - name: Cache go modules
         uses: actions/cache@v2
@@ -49,7 +55,7 @@ jobs:
           key: ${{ runner.os }}-dataflow-${{ hashFiles('go.sum') }}
 
       - name: Create k8s Kind Cluster
-        uses: helm/kind-action@v1.2.0
+        uses: helm/kind-action@v1.4.0
         with:
           cluster_name: dataflow-engine-cluster
           config: ${{ github.workspace }}/engine/chaos/manifests/kind-cluster.yaml
@@ -65,11 +71,12 @@ jobs:
           helm version
 
       - name: Build dataflow engine binary
-        run: make tiflow tiflow-chaos-case
+        run: |
+          make tiflow tiflow-chaos-case
+          cp -r $GITHUB_WORKSPACE/engine/chaos/cases/conf/ $GITHUB_WORKSPACE/bin/engine-conf
 
       - name: Build Dataflow engine docker image
         run: |
-          cp -r $GITHUB_WORKSPACE/engine/chaos/manifests/conf/ $GITHUB_WORKSPACE/bin/
           docker build -f $GITHUB_WORKSPACE/engine/chaos/manifests/Dockerfile -t dataflow:chaos $GITHUB_WORKSPACE/bin
           docker image list
 
@@ -77,111 +84,185 @@ jobs:
         run: |
           kind load docker-image dataflow:chaos --name dataflow-engine-cluster
 
-      # Set up metastore and basic services
-      - name: Set up metastore and basic services
+      # Set up upstream instances
+      - name: Set up sources
         run: |
-          kubectl apply -f $GITHUB_WORKSPACE/engine/chaos/manifests/metastore.yaml
-          kubectl get -f $GITHUB_WORKSPACE/engine/chaos/manifests/metastore.yaml
-          kubectl describe -f $GITHUB_WORKSPACE/engine/chaos/manifests/metastore.yaml
-      - name: Wait for metastore ready
+          kubectl apply -f $GITHUB_WORKSPACE/dm/chaos/manifests/sources.yaml
+          kubectl get -f $GITHUB_WORKSPACE/dm/chaos/manifests/sources.yaml
+          kubectl describe -f $GITHUB_WORKSPACE/dm/chaos/manifests/sources.yaml
+      - name: Wait for sources ready # kubectl wait --all not working
         run: |
-          kubectl wait --for=condition=Ready pod/metastore-framework-mysql-0 --timeout=60s || true
-          kubectl wait --for=condition=Ready pod/metastore-business-etcd-0 --timeout=60s || true
-
+          kubectl wait --for=condition=Ready pod/mysql57-0 --timeout=300s || true
+          kubectl wait --for=condition=Ready pod/mysql8-0 --timeout=300s || true
+          kubectl wait --for=condition=Ready pod/mariadb-0 --timeout=300s || true
+          sleep 10
           echo show pvc
-          kubectl get pvc -l app=metastore -o wide
+          kubectl get pvc -l app=sources -o wide
           echo show pv
           kubectl get pv -o wide
           echo show svc
-          kubectl get svc -l app=metastore -o wide
+          kubectl get svc -l app=sources -o wide
           echo show sts
-          kubectl get sts -l app=metastore -o wide
+          kubectl get sts -l app=sources -o wide
           echo show po
-          kubectl get po -l app=metastore -o wide
+          kubectl get po -l app=sources -o wide
           echo describe po
-          kubectl describe po -l app=metastore
+          kubectl describe po -l app=sources
           echo describe pvc
-          kubectl describe pvc -l app=metastore
-          kubectl wait --for=condition=Ready pod/metastore-framework-mysql-0 --timeout=0s
-          kubectl wait --for=condition=Ready pod/metastore-business-etcd-0 --timeout=0s
-
-      - name: Set up server-master
+          kubectl describe pvc -l app=sources
+          kubectl wait --for=condition=Ready pod/mysql57-0 --timeout=0s
+          kubectl wait --for=condition=Ready pod/mysql8-0 --timeout=0s
+          kubectl wait --for=condition=Ready pod/mariadb-0 --timeout=0s
+ 
+      # Set up downstream TiDB instance (deploy a TiDB with mockTiKV, not a TidbCluster managed by TiDB-operator)
+      - name: Set up TiDB
         run: |
-          kubectl apply -f $GITHUB_WORKSPACE/engine/chaos/manifests/server-master.yaml
-          kubectl get -f $GITHUB_WORKSPACE/engine/chaos/manifests/server-master.yaml
-          kubectl describe -f $GITHUB_WORKSPACE/engine/chaos/manifests/server-master.yaml
+          kubectl apply -f $GITHUB_WORKSPACE/dm/chaos/manifests/tidb.yaml
+          kubectl get -f $GITHUB_WORKSPACE/dm/chaos/manifests/tidb.yaml
+          kubectl describe -f $GITHUB_WORKSPACE/dm/chaos/manifests/tidb.yaml
+      - name: Wait for TiDB ready
+        run: |
+          kubectl wait --for=condition=Ready pod/tidb-0 --timeout=10m || true
+          echo show pvc
+          kubectl get pvc -l app=tidb -o wide
+          echo show pv
+          kubectl get pv -o wide
+          echo show svc
+          kubectl get svc -l app=tidb -o wide
+          echo show sts
+          kubectl get sts -l app=tidb -o wide
+          echo show po
+          kubectl get po -l app=tidb -o wide
+          echo describe po
+          kubectl describe po -l app=tidb
+          echo describe pvc
+          kubectl describe pvc -l app=tidb
+          kubectl wait --for=condition=Ready pod/tidb-0 --timeout=0s
+     
+      # Set up metastore and basic services
+      - name: Set up metastore and basic services
+        run: |
+          helm install -f $GITHUB_WORKSPACE/deployments/engine/helm/tiflow/values.yaml chaos $GITHUB_WORKSPACE/deployments/engine/helm/tiflow
+          helm list
+          sleep 5
+          kubectl get pods
+          
+      - name: Wait for metastore ready
+        run: |
+          kubectl wait --for=condition=Ready pod/chaos-metastore-mysql-0 --timeout=60s || true
+          kubectl wait --for=condition=Ready pod/chaos-metastore-etcd-0 --timeout=60s || true
+
+          echo show pvc
+          kubectl get pvc -l app=chaos-metastore-etcd -o wide
+          echo show pv
+          kubectl get pv -o wide
+          echo show svc
+          kubectl get svc -l app=chaos-metastore-etcd -o wide
+          echo show sts
+          kubectl get sts -l app=chaos-metastore-etcd -o wide
+          echo show po
+          kubectl get po -l app=chaos-metastore-etcd -o wide
+          echo describe po
+          kubectl describe po -l app=chaos-metastore-etcd
+          echo describe pvc
+          kubectl describe pvc -l app=chaos-metastore-etcd
+
+          echo show pvc
+          kubectl get pvc -l app=chaos-metastore-mysql -o wide
+          echo show pv
+          kubectl get pv -o wide
+          echo show svc
+          kubectl get svc -l app=chaos-metastore-mysql -o wide
+          echo show sts
+          kubectl get sts -l app=chaos-metastore-mysql -o wide
+          echo show po
+          kubectl get po -l app=chaos-metastore-mysql -o wide
+          echo describe po
+          kubectl describe po -l app=chaos-metastore-framework
+          echo describe pvc
+          kubectl describe pvc -l app=chaos-metastore-framework
 
       - name: Wait for server-master ready
         run: |
-          kubectl wait --for=condition=Ready pod -l app=server-master --all --timeout=60s|| true
+          kubectl wait --for=condition=Ready pod -l app=chaos-server-master --all --timeout=20s|| true
           echo "<<<<< show pvc >>>>>"
-          kubectl get pvc -l app=server-master -o wide
+          kubectl get pvc -l app=chaos-server-master -o wide
           echo "<<<<< show pv >>>>>"
           kubectl get pv -o wide
           echo "<<<<< show svc >>>>>"
-          kubectl get svc -l app=server-master -o wide
+          kubectl get svc -l app=chaos-server-master -o wide
           echo "<<<<< show sts >>>>>"
-          kubectl get sts -l app=server-master -o wide
+          kubectl get sts -l app=chaos-server-master -o wide
           echo "<<<<< show po >>>>>"
-          kubectl get po -l app=server-master -o wide
+          kubectl get po -l app=chaos-server-master -o wide
           echo "<<<<< describe po >>>>>"
-          kubectl describe po -l app=server-master
+          kubectl describe po -l app=chaos-server-master
           echo "<<<<< describe pvc >>>>>"
-          kubectl describe pvc -l app=server-master
-          echo "<<<<< show current log for server-master-0 >>>>>"
-          kubectl logs server-master-0 || true
-          echo "<<<<< show previous log for server-master-0 >>>>>"
-          kubectl logs server-master-0 -p || true
-          echo "<<<<< show current log for server-master-1 >>>>>"
-          kubectl logs server-master-1 || true
-          echo "<<<<< show previous log for server-master-1 >>>>>"
-          kubectl logs server-master-1 -p || true
-          echo "<<<<< show current log for server-master-2 >>>>>"
-          kubectl logs server-master-2 || true
-          echo "<<<<< show previous log for server-master-2 >>>>>"
-          kubectl logs server-master-2 -p || true
+          kubectl describe pvc -l app=chaos-server-master
+          echo "<<<<< show current log for chaos-server-master-0 >>>>>"
+          kubectl logs chaos-server-master-0 || true
+          echo "<<<<< show previous log for chaos-server-master-0 >>>>>"
+          kubectl logs chaos-server-master-0 -p || true
+          echo "<<<<< show current log for chaos-server-master-1 >>>>>"
+          kubectl logs chaos-server-master-1 || true
+          echo "<<<<< show previous log for chaos-server-master-1 >>>>>"
+          kubectl logs chaos-server-master-1 -p || true
+          echo "<<<<< show current log for chaos-server-master-2 >>>>>"
+          kubectl logs chaos-server-master-2 || true
+          echo "<<<<< show previous log for chaos-server-master-2 >>>>>"
+          kubectl logs chaos-server-master-2 -p || true
 
-      - name: Set up executor
-        run: |
-          kubectl apply -f $GITHUB_WORKSPACE/engine/chaos/manifests/executor.yaml
-          kubectl get -f $GITHUB_WORKSPACE/engine/chaos/manifests/executor.yaml
-          kubectl describe -f $GITHUB_WORKSPACE/engine/chaos/manifests/executor.yaml
+          kubectl logs chaos-server-master-0 -c wait-mysql || true
 
       - name: Wait for executor ready
         run: |
-          kubectl wait --for=condition=Ready pod -l app=executor --all --timeout=60s|| true
+          kubectl wait --for=condition=Ready pod -l app=chaos-executor --all --timeout=15s|| true
           echo "<<<<< show pvc >>>>>"
-          kubectl get pvc -l app=executor -o wide
+          kubectl get pvc -l app=chaos-executor -o wide
           echo "<<<<< show pv >>>>>"
           kubectl get pv -o wide
           echo "<<<<< show svc >>>>>"
-          kubectl get svc -l app=executor -o wide
+          kubectl get svc -l app=chaos-executor -o wide
           echo "<<<<< show sts >>>>>"
-          kubectl get sts -l app=executor -o wide
+          kubectl get sts -l app=chaos-executor -o wide
           echo "<<<<< show po >>>>>"
-          kubectl get po -l app=executor -o wide
+          kubectl get po -l app=chaos-executor -o wide
           echo "<<<<< describe po >>>>>"
-          kubectl describe po -l app=executor
+          kubectl describe po -l app=chaos-executor
           echo "<<<<< describe pvc >>>>>"
-          kubectl describe pvc -l app=executor
-          echo "<<<<< show current log for executor-0 >>>>>"
-          kubectl logs executor-0 || true
-          echo "<<<<< show previous log for executor-0 >>>>>"
-          kubectl logs executor-0 -p || true
-          echo "<<<<< show current log for executor-1 >>>>>"
-          kubectl logs executor-1 || true
+          kubectl describe pvc -l app=chaos-executor
+          echo "<<<<< show current log for chaos-executor-0 >>>>>"
+          kubectl logs chaos-executor-0 || true
+          echo "<<<<< show previous log for chaos-executor-0 >>>>>"
+          kubectl logs chaos-executor-0 -p || true
+          echo "<<<<< show current log for chaos-executor-1 >>>>>"
+          kubectl logs chaos-executor-1 || true
           echo "<<<<< show previous log for worker-master-1 >>>>>"
-          kubectl logs executor-1 -p || true
-          echo "<<<<< show current log for executor-2 >>>>>"
-          kubectl logs executor-2 || true
-          echo "<<<<< show previous log for executor-2 >>>>>"
-          kubectl logs executor-2 -p || true
+          kubectl logs chaos-executor-1 -p || true
+          echo "<<<<< show current log for chaos-executor-2 >>>>>"
+          kubectl logs chaos-executor-2 || true
+          echo "<<<<< show previous log for chaos-executor-2 >>>>>"
+          kubectl logs chaos-executor-2 -p || true
+
+          kubectl logs chaos-executor-0 -c wait-server-master || true
 
       - name: Set up chaos test cases
         run: |
           kubectl apply -f $GITHUB_WORKSPACE/engine/chaos/manifests/cases.yaml
           kubectl get -f $GITHUB_WORKSPACE/engine/chaos/manifests/cases.yaml
           kubectl describe -f $GITHUB_WORKSPACE/engine/chaos/manifests/cases.yaml
+          kubectl get pods
+
+      # FIXME: remove this after fix https://github.com/pingcap/tiflow/issues/7304
+      - name: Wait DM enter sync stage
+        run: |
+          for idx in $(seq 0 300); do
+            echo "wait dm enter sync stage"
+            if kubectl logs job.batch/chaos-test-case | grep "full mode of the task has completed" ; then
+              break
+            fi
+            sleep 1
+          done
 
       - name: Encode chaos-mesh action
         run: |
@@ -191,7 +272,6 @@ jobs:
         uses: chaos-mesh/chaos-mesh-action@master
         env:
           CFG_BASE64: ${{ env.CFG_BASE64 }}
-          CHAOS_MESH_VERSION: v1.0.0
 
       # check whether complete with 1m * 20 times.
       - name: Wait for chaos test case complete
@@ -208,14 +288,14 @@ jobs:
         run: |
           # Add a delay if test fails, to check whether the cluster can recover after chaos is removed
           sleep 60
-          kubectl get pods --no-headers -o custom-columns=":metadata.name"|grep -E "server-master"|xargs -I{} kubectl exec -it {} -- wget http://127.0.0.1:10240/debug/pprof/goroutine?debug=2 -O /log/{}_goroutines.log || true
-          kubectl get pods --no-headers -o custom-columns=":metadata.name"|grep -E "executor"|xargs -I{} kubectl exec -it {} -- wget http://127.0.0.1:10241/debug/pprof/goroutine?debug=2 -O /log/{}_goroutines.log || true
+          kubectl get pods --no-headers -o custom-columns=":metadata.name"|grep -E "server-master"|xargs -I{} kubectl exec -i -c server-master {} -- wget http://127.0.0.1:10240/debug/pprof/goroutine?debug=2 -O /log/{}_goroutines.log || true
+          kubectl get pods --no-headers -o custom-columns=":metadata.name"|grep -E "executor"|xargs -I{} kubectl exec -i -c executor {} -- wget http://127.0.0.1:10241/debug/pprof/goroutine?debug=2 -O /log/{}_goroutines.log || true
 
       - name: Copy logs to hack permission
         if: ${{ always() }}
         run: |
           mkdir ./logs
-          kubectl get pods --no-headers -o custom-columns=":metadata.name"|grep -E "server-master|executor"|xargs -I{} sudo kubectl cp {}:/log ./logs || true
+          kubectl get pods --no-headers -o custom-columns=":metadata.name"|grep -E "server-master|executor"|xargs -I{} kubectl cp {}:/log ./logs || true
           kind export logs ./logs/kind --name dataflow-engine-cluster
           sudo chown -R runner ./logs
 

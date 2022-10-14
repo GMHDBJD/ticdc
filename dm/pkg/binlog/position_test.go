@@ -18,7 +18,6 @@ import (
 
 	gmysql "github.com/go-mysql-org/go-mysql/mysql"
 	. "github.com/pingcap/check"
-
 	"github.com/pingcap/tiflow/dm/pkg/gtid"
 )
 
@@ -267,7 +266,7 @@ func (t *testPositionSuite) TestAdjustPosition(c *C) {
 	}
 
 	for _, cs := range cases {
-		adjustedPos := AdjustPosition(cs.pos)
+		adjustedPos := RemoveRelaySubDirSuffix(cs.pos)
 		c.Assert(adjustedPos.Name, Equals, cs.adjustedPos.Name)
 		c.Assert(adjustedPos.Pos, Equals, cs.adjustedPos.Pos)
 	}

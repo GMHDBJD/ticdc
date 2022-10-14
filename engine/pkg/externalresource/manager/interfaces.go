@@ -18,7 +18,7 @@ import (
 
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	"github.com/pingcap/tiflow/engine/model"
-	resModel "github.com/pingcap/tiflow/engine/pkg/externalresource/resourcemeta/model"
+	resModel "github.com/pingcap/tiflow/engine/pkg/externalresource/model"
 	"github.com/pingcap/tiflow/engine/pkg/notifier"
 )
 
@@ -26,18 +26,17 @@ import (
 // of all executors
 type ExecutorInfoProvider interface {
 	HasExecutor(executorID string) bool
-	ListExecutors() []string
 
 	// WatchExecutors returns a snapshot of all online executors plus
 	// a stream of events describing changes that happen to the executors
 	// after the snapshot is taken.
 	WatchExecutors(ctx context.Context) (
-		snap []model.ExecutorID, stream *notifier.Receiver[model.ExecutorStatusChange], err error,
+		snap map[model.ExecutorID]string, stream *notifier.Receiver[model.ExecutorStatusChange], err error,
 	)
 }
 
 // JobStatus describes the a Job's status.
-type JobStatus = frameModel.MasterStatusCode
+type JobStatus = frameModel.MasterState
 
 // JobStatusesSnapshot describes the statuses of all jobs
 // at some time point.
@@ -84,4 +83,5 @@ type GCCoordinator interface {
 type GCRunner interface {
 	Run(ctx context.Context) error
 	GCNotify()
+	GCExecutors(context.Context, ...model.ExecutorID) error
 }

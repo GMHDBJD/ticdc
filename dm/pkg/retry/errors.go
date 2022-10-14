@@ -19,7 +19,6 @@ import (
 	gmysql "github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/pingcap/errors"
 	tmysql "github.com/pingcap/tidb/parser/mysql"
-
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 )
 
@@ -68,6 +67,8 @@ var (
 		int32(terror.ErrDumpUnitGlobalLock.Code()):          {},
 		int32(terror.ErrDumpUnitRuntime.Code()):             {},
 		int32(terror.ErrSyncerUnitDMLColumnNotMatch.Code()): {},
+		int32(terror.ErrSyncerCancelledDDL.Code()):          {},
+		int32(terror.ErrLoadLightningRuntime.Code()):        {},
 	}
 
 	// UnresumableRelayErrCodes is a set of unresumeable relay unit err codes.
@@ -81,6 +82,7 @@ var (
 )
 
 // IsConnectionError tells whether this error should reconnect to Database.
+// Return true also means caller can retry sql safely.
 func IsConnectionError(err error) bool {
 	err = errors.Cause(err)
 	switch err {

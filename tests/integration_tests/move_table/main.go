@@ -21,7 +21,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strings"
 	"time"
@@ -123,7 +122,7 @@ type tableInfo struct {
 type cluster struct {
 	ownerAddr  string
 	captures   map[string][]*tableInfo
-	cdcEtcdCli etcd.CDCEtcdClient
+	cdcEtcdCli *etcd.CDCEtcdClientImpl
 }
 
 func newCluster(ctx context.Context, pd string) (*cluster, error) {
@@ -243,7 +242,8 @@ func (c *cluster) refreshInfo(ctx context.Context) error {
 
 // queryProcessor invokes the following API to get the mapping from
 // captureIDs to tableIDs:
-//     GET /api/v1/processors/{changefeed_id}/{capture_id}
+//
+//	GET /api/v1/processors/{changefeed_id}/{capture_id}
 func queryProcessor(
 	apiEndpoint string,
 	changefeed string,
@@ -269,7 +269,7 @@ func queryProcessor(
 			errors.Errorf("HTTP API returned error status: %d, url: %s", resp.StatusCode, requestURL))
 	}
 
-	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, errors.Trace(err)
 	}

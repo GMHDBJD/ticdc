@@ -15,6 +15,7 @@ package writer
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/pingcap/log"
@@ -25,13 +26,15 @@ import (
 // blackHoleSink defines a blackHole storage, it receives events and persists
 // without any latency
 type blackHoleWriter struct {
-	tableRtsMap  map[model.TableID]uint64
-	tableRtsMu   sync.RWMutex
-	resolvedTs   uint64
-	checkpointTs uint64
+	tableRtsMap map[model.TableID]uint64
+	tableRtsMu  sync.RWMutex
 }
 
 func (bs *blackHoleWriter) DeleteAllLogs(ctx context.Context) error {
+	return nil
+}
+
+func (bs *blackHoleWriter) GC(ctx context.Context, checkpointTs model.Ts) error {
 	return nil
 }
 
@@ -61,6 +64,10 @@ func (bs *blackHoleWriter) FlushLog(_ context.Context, checkpointTs, resolvedTs 
 	return nil
 }
 
+func (ibs *blackHoleWriter) GetMeta() (checkpointTs, resolvedTs model.Ts) {
+	return 0, 0
+}
+
 func (bs *blackHoleWriter) SendDDL(_ context.Context, ddl *model.RedoDDLEvent) error {
 	log.Debug("send ddl event", zap.Any("ddl", ddl))
 	return nil
@@ -68,4 +75,27 @@ func (bs *blackHoleWriter) SendDDL(_ context.Context, ddl *model.RedoDDLEvent) e
 
 func (bs *blackHoleWriter) Close() error {
 	return nil
+}
+
+type invalidBlackHoleWriter struct {
+	*blackHoleWriter
+}
+
+// NewInvalidBlackHoleWriter creates a invalid blackHole writer
+func NewInvalidBlackHoleWriter(rl RedoLogWriter) *invalidBlackHoleWriter {
+	return &invalidBlackHoleWriter{
+		blackHoleWriter: rl.(*blackHoleWriter),
+	}
+}
+
+func (ibs *invalidBlackHoleWriter) WriteLog(
+	_ context.Context, _ model.TableID, _ []*model.RedoRowChangedEvent,
+) (err error) {
+	return errors.New("[WriteLog] invalid black hole writer")
+}
+
+func (ibs *invalidBlackHoleWriter) FlushLog(
+	_ context.Context, _, _ model.Ts,
+) error {
+	return errors.New("[FlushLog] invalid black hole writer")
 }

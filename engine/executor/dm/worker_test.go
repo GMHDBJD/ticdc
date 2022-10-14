@@ -14,19 +14,20 @@
 package dm
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"testing"
 	"time"
 
-	"github.com/go-mysql-org/go-mysql/mysql"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/dig"
-
-	dmconfig "github.com/pingcap/tiflow/dm/dm/config"
-	"github.com/pingcap/tiflow/dm/dm/pb"
+	"github.com/BurntSushi/toml"
+	dmconfig "github.com/pingcap/tiflow/dm/config"
+	dmmaster "github.com/pingcap/tiflow/dm/master"
+	"github.com/pingcap/tiflow/dm/pb"
 	"github.com/pingcap/tiflow/engine/framework"
+	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	"github.com/pingcap/tiflow/engine/framework/registry"
+	"github.com/pingcap/tiflow/engine/jobmaster/dm/config"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
 	"github.com/pingcap/tiflow/engine/model"
 	dcontext "github.com/pingcap/tiflow/engine/pkg/context"
@@ -37,7 +38,11 @@ import (
 	pkgOrm "github.com/pingcap/tiflow/engine/pkg/orm"
 	"github.com/pingcap/tiflow/engine/pkg/p2p"
 	cerrors "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/dig"
 )
+
+var jobTemplatePath = "../../jobmaster/dm/config/job_template.yaml"
 
 type workerParamListForTest struct {
 	dig.Out
@@ -64,20 +69,36 @@ func TestFactory(t *testing.T) {
 		BusinessClientConn:    kvmock.NewMockClientConn(),
 		ResourceBroker:        broker.NewBrokerForTesting("exector-id"),
 	}
+	defer depsForTest.ResourceBroker.Close()
 	require.NoError(t, dp.Provide(func() workerParamListForTest {
 		return depsForTest
 	}))
 
+	funcBackup := dmmaster.CheckAndAdjustSourceConfigFunc
+	dmmaster.CheckAndAdjustSourceConfigFunc = func(ctx context.Context, cfg *dmconfig.SourceConfig) error { return nil }
+	defer func() {
+		dmmaster.CheckAndAdjustSourceConfigFunc = funcBackup
+	}()
 	// test factory
-	subtaskCfg := &dmconfig.SubTaskConfig{Name: "job-id", SourceID: "task-id", Flavor: mysql.MySQLFlavor}
-	content, err := subtaskCfg.Toml()
-	require.NoError(t, err)
+	var jobCfg config.JobCfg
+	require.NoError(t, jobCfg.DecodeFile(jobTemplatePath))
+	taskCfg := jobCfg.ToTaskCfgs()["mysql-replica-01"]
+	var b bytes.Buffer
+	require.NoError(t, toml.NewEncoder(&b).Encode(taskCfg))
+	content := b.Bytes()
 	RegisterWorker()
-	_, err = registry.GlobalWorkerRegistry().CreateWorker(dctx, framework.WorkerDMDump, "worker-id", "dm-jobmaster-id", []byte(content))
+
+	_, err = registry.GlobalWorkerRegistry().CreateWorker(
+		dctx, frameModel.WorkerDMDump, "worker-id", "dm-jobmaster-id",
+		content, int64(2))
 	require.NoError(t, err)
-	_, err = registry.GlobalWorkerRegistry().CreateWorker(dctx, framework.WorkerDMLoad, "worker-id", "dm-jobmaster-id", []byte(content))
+	_, err = registry.GlobalWorkerRegistry().CreateWorker(
+		dctx, frameModel.WorkerDMLoad, "worker-id", "dm-jobmaster-id",
+		content, int64(3))
 	require.NoError(t, err)
-	_, err = registry.GlobalWorkerRegistry().CreateWorker(dctx, framework.WorkerDMSync, "worker-id", "dm-jobmaster-id", []byte(content))
+	_, err = registry.GlobalWorkerRegistry().CreateWorker(
+		dctx, frameModel.WorkerDMSync, "worker-id", "dm-jobmaster-id",
+		content, int64(4))
 	require.NoError(t, err)
 }
 
@@ -88,8 +109,24 @@ func TestWorker(t *testing.T) {
 	require.NoError(t, dp.Provide(func() p2p.MessageHandlerManager {
 		return p2p.NewMockMessageHandlerManager()
 	}))
-	dmWorker := newDMWorker(dctx, "master-id", framework.WorkerDMDump, &dmconfig.SubTaskConfig{})
-	require.NotNil(t, dmWorker.messageAgent)
+	taskCfg := &config.TaskCfg{
+		JobCfg: config.JobCfg{
+			TargetDB: &dmconfig.DBConfig{},
+			Upstreams: []*config.UpstreamCfg{
+				{
+					MySQLInstance: dmconfig.MySQLInstance{
+						Mydumper: &dmconfig.MydumperConfig{},
+						Loader:   &dmconfig.LoaderConfig{},
+						Syncer:   &dmconfig.SyncerConfig{},
+						SourceID: "task-id",
+					},
+					DBCfg: &dmconfig.DBConfig{},
+				},
+			},
+		},
+		NeedExtStorage: true,
+	}
+	dmWorker := newDMWorker(dctx, "master-id", frameModel.WorkerDMDump, taskCfg)
 	unitHolder := &mockUnitHolder{}
 	dmWorker.unitHolder = unitHolder
 	dmWorker.BaseWorker = framework.MockBaseWorker("worker-id", "master-id", dmWorker)
@@ -116,11 +153,11 @@ func TestWorker(t *testing.T) {
 
 	// placeholder
 	require.Equal(t, model.RescUnit(0), dmWorker.Workload())
-	require.NoError(t, dmWorker.OnMasterFailover(framework.MasterFailoverReason{}))
-	require.NoError(t, dmWorker.OnMasterMessage("", nil))
+	require.NoError(t, dmWorker.OnMasterMessage(context.Background(), "", nil))
 
 	// Finished
-	unitHolder.On("Stage").Return(metadata.StageFinished, nil).Twice()
+	unitHolder.On("Stage").Return(metadata.StageFinished, nil).Times(3)
+	unitHolder.On("Status").Return(&pb.DumpStatus{}).Once()
 	require.True(t, cerrors.ErrWorkerFinish.Equal(dmWorker.Tick(context.Background())))
 
 	unitHolder.AssertExpectations(t)

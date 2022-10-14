@@ -21,7 +21,6 @@ import (
 	cmdcontext "github.com/pingcap/tiflow/pkg/cmd/context"
 	"github.com/pingcap/tiflow/pkg/cmd/factory"
 	"github.com/pingcap/tiflow/pkg/cmd/util"
-	"github.com/pingcap/tiflow/pkg/etcd"
 	"github.com/spf13/cobra"
 )
 
@@ -32,12 +31,10 @@ type processorMeta struct {
 
 // queryProcessorOptions defines flags for the `cli processor query` command.
 type queryProcessorOptions struct {
-	etcdClient *etcd.CDCEtcdClient
-	apiClient  apiv1client.APIV1Interface
+	apiClient apiv1client.APIV1Interface
 
-	changefeedID     string
-	captureID        string
-	runWithAPIClient bool
+	changefeedID string
+	captureID    string
 }
 
 // newQueryProcessorOptions creates new options for the `cli changefeed query` command.
@@ -110,13 +107,9 @@ func newCmdQueryProcessor(f factory.Factory) *cobra.Command {
 		Use:   "query",
 		Short: "Query information and status of a sub replication task (processor)",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			err := o.complete(f)
-			if err != nil {
-				return err
-			}
-
-			return o.run(cmd)
+		Run: func(cmd *cobra.Command, args []string) {
+			util.CheckErr(o.complete(f))
+			util.CheckErr(o.run(cmd))
 		},
 	}
 

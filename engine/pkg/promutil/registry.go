@@ -16,11 +16,10 @@ package promutil
 import (
 	"sync"
 
+	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	dto "github.com/prometheus/client_model/go"
-
-	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 )
 
 var _ prometheus.Gatherer = globalMetricGatherer
@@ -181,4 +180,28 @@ func (o RegOnlyRegister) MustRegister(collector ...prometheus.Collector) {
 // Unregister implements prometheus.Registerer.
 func (o RegOnlyRegister) Unregister(collector prometheus.Collector) bool {
 	return false
+}
+
+// UnregOnlyRegister can Unregister collectors but can't Register. It's used to
+// protect the global registry.
+type UnregOnlyRegister struct {
+	r prometheus.Registerer
+}
+
+// NewOnlyUnregRegister creates an UnregOnlyRegister.
+func NewOnlyUnregRegister(r prometheus.Registerer) prometheus.Registerer {
+	return &UnregOnlyRegister{r}
+}
+
+// Register implements prometheus.Registerer.
+func (o UnregOnlyRegister) Register(collector prometheus.Collector) error {
+	return nil
+}
+
+// MustRegister implements prometheus.Registerer.
+func (o UnregOnlyRegister) MustRegister(collector ...prometheus.Collector) {}
+
+// Unregister implements prometheus.Registerer.
+func (o UnregOnlyRegister) Unregister(collector prometheus.Collector) bool {
+	return o.r.Unregister(collector)
 }

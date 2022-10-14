@@ -19,11 +19,10 @@ import (
 	"github.com/go-mysql-org/go-mysql/mysql"
 	. "github.com/pingcap/check"
 	"github.com/pingcap/tidb/util/filter"
-	"github.com/stretchr/testify/require"
-
 	cdcmodel "github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	"github.com/pingcap/tiflow/pkg/sqlmodel"
+	"github.com/stretchr/testify/require"
 )
 
 var _ = Suite(&testJobSuite{})
@@ -74,7 +73,7 @@ func TestJob(t *testing.T) {
 	}
 	table := &cdcmodel.TableName{Schema: "test", Table: "t1"}
 	location := binlog.MustZeroLocation(mysql.MySQLFlavor)
-	ec := &eventContext{startLocation: &location, currentLocation: &location, lastLocation: &location, safeMode: true}
+	ec := &eventContext{startLocation: location, endLocation: location, lastLocation: location, safeMode: true}
 	qec := &queryEventContext{
 		eventContext:    ec,
 		originSQL:       "create database test",

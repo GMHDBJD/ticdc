@@ -22,19 +22,18 @@ import (
 	"github.com/pingcap/log"
 	apiv1client "github.com/pingcap/tiflow/pkg/api/v1"
 	apiv2client "github.com/pingcap/tiflow/pkg/api/v2"
+	cmdconetxt "github.com/pingcap/tiflow/pkg/cmd/context"
 	"github.com/pingcap/tiflow/pkg/cmd/util"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/pingcap/tiflow/pkg/etcd"
+	"github.com/pingcap/tiflow/pkg/security"
+	"github.com/pingcap/tiflow/pkg/version"
 	pd "github.com/tikv/pd/client"
 	etcdlogutil "go.etcd.io/etcd/client/pkg/v3/logutil"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
-
-	cmdconetxt "github.com/pingcap/tiflow/pkg/cmd/context"
-	"github.com/pingcap/tiflow/pkg/etcd"
-	"github.com/pingcap/tiflow/pkg/security"
-	"github.com/pingcap/tiflow/pkg/version"
 )
 
 const (
@@ -89,7 +88,7 @@ func (f *factoryImpl) GetCredential() *security.Credential {
 }
 
 // EtcdClient creates new cdc etcd client.
-func (f *factoryImpl) EtcdClient() (*etcd.CDCEtcdClient, error) {
+func (f *factoryImpl) EtcdClient() (*etcd.CDCEtcdClientImpl, error) {
 	ctx := cmdconetxt.GetDefaultContext()
 	tlsConfig, err := f.ToTLSConfig()
 	if err != nil {
@@ -135,11 +134,17 @@ func (f *factoryImpl) EtcdClient() (*etcd.CDCEtcdClient, error) {
 	})
 	if err != nil {
 		return nil, errors.Annotatef(err,
-			"fail to open PD client, please check pd address \"%s\"", pdAddr)
+			"Fail to open PD client. Please check the pd address(es) \"%s\"", pdAddr)
 	}
 
 	client, err := etcd.NewCDCEtcdClient(ctx, etcdClient, etcd.DefaultCDCClusterID)
-	return &client, err
+	if err != nil {
+		return nil, cerror.ErrEtcdAPIError.GenWithStack(
+			"Etcd operation error. Please check the cluster's status " +
+				" and the pd address(es) \"%s\"")
+	}
+
+	return client, err
 }
 
 // PdClient creates new pd client.
@@ -155,7 +160,7 @@ func (f factoryImpl) PdClient() (pd.Client, error) {
 	pdAddr := f.GetPdAddr()
 	if len(pdAddr) == 0 {
 		return nil, cerror.ErrInvalidServerOption.
-			GenWithStack("empty PD address, please use --pd to specify PD cluster addresses")
+			GenWithStack("Empty PD address. Please use --pd to specify PD cluster addresses")
 	}
 	pdEndpoints := strings.Split(pdAddr, ",")
 	for _, ep := range pdEndpoints {
@@ -184,7 +189,7 @@ func (f factoryImpl) PdClient() (pd.Client, error) {
 		))
 	if err != nil {
 		return nil, errors.Annotatef(err,
-			"fail to open PD client, please check pd address \"%s\"", pdAddr)
+			"Fail to open PD client. Please check the pd address(es)  \"%s\"", pdAddr)
 	}
 
 	err = version.CheckClusterVersion(ctx, pdClient, pdEndpoints, credential, true)
@@ -202,7 +207,11 @@ func (f *factoryImpl) APIV1Client() (apiv1client.APIV1Interface, error) {
 		return nil, errors.Trace(err)
 	}
 	log.Info(serverAddr)
-	return apiv1client.NewAPIClient(serverAddr, f.clientGetter.GetCredential())
+	client, err := apiv1client.NewAPIClient(serverAddr, f.clientGetter.GetCredential())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	return client, checkCDCVersion(client)
 }
 
 // APIV2Client returns cdc api v2 client.
@@ -212,9 +221,26 @@ func (f *factoryImpl) APIV2Client() (apiv2client.APIV2Interface, error) {
 		return nil, errors.Trace(err)
 	}
 	log.Info(serverAddr)
+	client, err := apiv1client.NewAPIClient(serverAddr, f.clientGetter.GetCredential())
+	if err != nil {
+		return nil, errors.Trace(err)
+	}
+	if err := checkCDCVersion(client); err != nil {
+		return nil, errors.Trace(err)
+	}
 	return apiv2client.NewAPIClient(serverAddr, f.clientGetter.GetCredential())
 }
 
+// findServerAddr find the cdc server address by the following logic
+// a) Only the cdc server address is specified: use it;
+// b) Only the PD address is specified:
+//  1. check the address and create a etcdClient
+//  2. check the etcd keys and find cdc cluster addresses:
+//     If there are multiple CDC clusters exist, report an error; otherwise,
+//     cache the server address in f.fetchedServerAddr and return it (since
+//     some cli cmds use both apiV1 and apiV2)
+//
+// c) Both PD and cdc server addresses are specified: report an error
 func (f *factoryImpl) findServerAddr() (string, error) {
 	if f.fetchedServerAddr != "" {
 		return f.fetchedServerAddr, nil
@@ -233,11 +259,18 @@ func (f *factoryImpl) findServerAddr() (string, error) {
 	if f.clientGetter.GetServerAddr() != "" {
 		return f.clientGetter.GetServerAddr(), nil
 	}
+	// check pd-address represents a real pd cluster
+	pdClient, err := f.PdClient()
+	if err != nil {
+		return "", errors.Trace(err)
+	}
+	defer pdClient.Close()
 	// use pd to get server addr from etcd
 	etcdClient, err := f.EtcdClient()
 	if err != nil {
 		return "", errors.Trace(err)
 	}
+	defer etcdClient.Close()
 
 	ctx := cmdconetxt.GetDefaultContext()
 	err = etcdClient.CheckMultipleCDCClusterExist(ctx)
@@ -264,4 +297,22 @@ func (f *factoryImpl) findServerAddr() (string, error) {
 		}
 	}
 	return "", errors.New("no capture is found")
+}
+
+func checkCDCVersion(client apiv1client.APIV1Interface) error {
+	serverStatus, err := client.Status().Get(cmdconetxt.GetDefaultContext())
+	if err != nil {
+		return errors.Trace(err)
+	}
+	cdcVersion, err := version.GetTiCDCClusterVersion([]string{serverStatus.Version})
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if !cdcVersion.ShouldRunCliWithOpenAPI() {
+		return errors.New("Can’t operate the TiCDC cluster, " +
+			"the cluster version is too old. Only the version of this cluster " +
+			"larger or equal than v6.2.0 can be operated, " +
+			"please make sure the server version and the cli-tools version are matched.")
+	}
+	return nil
 }

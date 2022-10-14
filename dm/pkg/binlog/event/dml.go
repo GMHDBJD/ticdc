@@ -19,7 +19,6 @@ import (
 
 	"github.com/go-mysql-org/go-mysql/mysql"
 	"github.com/go-mysql-org/go-mysql/replication"
-
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 )
 
@@ -37,11 +36,14 @@ type DMLData struct {
 
 // GenDMLEvents generates binlog events for `INSERT`/`UPDATE`/`DELETE`.
 // if DMLData.Query is empty:
-// 	 events: [GTIDEvent, QueryEvent, TableMapEvent, RowsEvent, ..., XIDEvent]
-//   NOTE: multi <TableMapEvent, RowsEvent> pairs can be in events.
+//
+//		 events: [GTIDEvent, QueryEvent, TableMapEvent, RowsEvent, ..., XIDEvent]
+//	  NOTE: multi <TableMapEvent, RowsEvent> pairs can be in events.
+//
 // if DMLData.Query is not empty:
-// 	 events: [GTIDEvent, QueryEvent, QueryEvent, ..., XIDEvent]
-//   NOTE: multi <QueryEvent> can be in events.
+//
+//		 events: [GTIDEvent, QueryEvent, QueryEvent, ..., XIDEvent]
+//	  NOTE: multi <QueryEvent> can be in events.
 func GenDMLEvents(flavor string, serverID uint32, latestPos uint32, latestGTID mysql.GTIDSet, eventType replication.EventType, xid uint64, dmlData []*DMLData, genGTID, anonymousGTID bool, ts int64) (*DDLDMLResult, error) {
 	if len(dmlData) == 0 {
 		return nil, terror.ErrBinlogDMLEmptyData.Generate()
@@ -92,6 +94,7 @@ func GenDMLEvents(flavor string, serverID uint32, latestPos uint32, latestGTID m
 			if err2 != nil {
 				return nil, terror.Annotatef(err2, "generate QueryEvent for %s", data.Query)
 			}
+			latestPos = dmlQueryEv.Header.LogPos
 			events = append(events, dmlQueryEv)
 			continue
 		}

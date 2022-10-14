@@ -17,19 +17,16 @@ import (
 	"context"
 	"time"
 
-	"github.com/modern-go/reflect2"
-	"go.uber.org/zap"
-	"golang.org/x/time/rate"
-
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-
 	"github.com/pingcap/tiflow/engine/framework/internal/worker"
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	pkgOrm "github.com/pingcap/tiflow/engine/pkg/orm"
 	"github.com/pingcap/tiflow/engine/pkg/p2p"
 	derrors "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/retry"
+	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 // Writer is used to persist WorkerStatus changes and send notifications
@@ -37,7 +34,7 @@ import (
 type Writer struct {
 	metaclient    pkgOrm.Client
 	messageSender p2p.MessageSender
-	lastStatus    *frameModel.WorkerStatus
+	lastStatus    frameModel.WorkerStatus
 
 	workerID   frameModel.WorkerID
 	masterInfo worker.MasterInfoProvider
@@ -69,17 +66,18 @@ func (w *Writer) UpdateStatus(ctx context.Context, newStatus *frameModel.WorkerS
 			zap.String("worker-id", w.workerID),
 			zap.String("master-id", w.masterInfo.MasterID()),
 			zap.String("master-node", w.masterInfo.MasterNode()),
-			zap.Int64("master-epoch", w.masterInfo.Epoch()))
+			zap.Int64("master-epoch", w.masterInfo.Epoch()),
+			zap.Error(retErr))
 	}()
 
-	if reflect2.IsNil(w.lastStatus) || newStatus.HasSignificantChange(w.lastStatus) {
+	if w.lastStatus.HasSignificantChange(newStatus) {
 		// Status has changed, so we need to persist the status.
 		if err := w.persistStatus(ctx, newStatus); err != nil {
 			return err
 		}
 	}
 
-	w.lastStatus = newStatus
+	w.lastStatus = *newStatus
 
 	// TODO replace the timeout with a variable.
 	return w.sendStatusMessageWithRetry(ctx, 15*time.Second, newStatus)

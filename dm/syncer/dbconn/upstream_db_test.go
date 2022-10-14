@@ -22,8 +22,7 @@ import (
 	"github.com/go-mysql-org/go-mysql/replication"
 	"github.com/google/uuid"
 	. "github.com/pingcap/check"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
+	"github.com/pingcap/tiflow/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/conn"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
 	"github.com/pingcap/tiflow/dm/pkg/utils"

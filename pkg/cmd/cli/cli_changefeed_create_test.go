@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -133,7 +132,7 @@ func TestChangefeedCreateCli(t *testing.T) {
 	cmd := newCmdCreateChangefeed(f)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "cf.toml")
-	err := os.WriteFile(configPath, []byte("enable-old-value=false\r\n"), 0o644)
+	err := os.WriteFile(configPath, []byte("enable-old-value=false\r\nenable-sync-point=true\r\nsync-point-interval='20m'"), 0o644)
 	require.Nil(t, err)
 	os.Args = []string{
 		"create",
@@ -143,8 +142,6 @@ func TestChangefeedCreateCli(t *testing.T) {
 		"--sink-uri=blackhole://sss?protocol=canal",
 		"--schema-registry=a",
 		"--sort-engine=memory",
-		"--sync-point=true",
-		"--sync-interval=1s",
 		"--changefeed-id=abc",
 		"--upstream-pd=pd",
 		"--upstream-ca=ca",
@@ -172,9 +169,8 @@ func TestChangefeedCreateCli(t *testing.T) {
 	require.Nil(t, cmd.Execute())
 
 	cmd = newCmdCreateChangefeed(f)
-	os.Args = []string{
-		"create",
-		"--sort-dir=false",
-	}
-	require.True(t, strings.Contains(cmd.Execute().Error(), "sort-dir"))
+	o := newCreateChangefeedOptions(newChangefeedCommonOptions())
+	o.commonChangefeedOptions.sortDir = "/tmp/test"
+	require.NoError(t, o.complete(f, cmd))
+	require.Contains(t, o.validate(cmd).Error(), "creating changefeed with `--sort-dir`")
 }

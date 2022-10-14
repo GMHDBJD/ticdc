@@ -18,9 +18,8 @@ import (
 
 	. "github.com/pingcap/check"
 	"github.com/pingcap/tidb/util/filter"
+	"github.com/pingcap/tiflow/dm/config"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/schema"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
@@ -96,10 +95,12 @@ create table t (
 
 	dbConn := dbconn.NewDBConn(&config.SubTaskConfig{}, s.baseConn)
 	for _, ca := range cases {
-		schemaTracker, err := schema.NewTestTracker(ctx, "unit-test", defaultTestSessionCfg, dbConn, log.L())
+		schemaTracker, err := schema.NewTestTracker(ctx, "unit-test", dbConn, log.L())
 		c.Assert(err, IsNil)
 		c.Assert(schemaTracker.CreateSchemaIfNotExists(dbName), IsNil)
-		c.Assert(schemaTracker.Exec(ctx, dbName, ca.tableStr), IsNil)
+		stmt, err := parseSQL(ca.tableStr)
+		c.Assert(err, IsNil)
+		c.Assert(schemaTracker.Exec(ctx, dbName, stmt), IsNil)
 
 		ti, err := schemaTracker.GetTableInfo(table)
 		c.Assert(err, IsNil)
@@ -129,7 +130,7 @@ create table t (
 		c.Assert(err, IsNil)
 		c.Assert(skip, Equals, false)
 
-		c.Assert(schemaTracker.Close(), IsNil)
+		schemaTracker.Close()
 	}
 }
 
@@ -359,10 +360,12 @@ create table t (
 	dbConn := dbconn.NewDBConn(&config.SubTaskConfig{}, s.baseConn)
 	for _, ca := range cases {
 		c.Log(ca.tableStr)
-		schemaTracker, err := schema.NewTestTracker(ctx, "unit-test", defaultTestSessionCfg, dbConn, log.L())
+		schemaTracker, err := schema.NewTestTracker(ctx, "unit-test", dbConn, log.L())
 		c.Assert(err, IsNil)
 		c.Assert(schemaTracker.CreateSchemaIfNotExists(dbName), IsNil)
-		c.Assert(schemaTracker.Exec(ctx, dbName, ca.tableStr), IsNil)
+		stmt, err := parseSQL(ca.tableStr)
+		c.Assert(err, IsNil)
+		c.Assert(schemaTracker.Exec(ctx, dbName, stmt), IsNil)
 
 		ti, err := schemaTracker.GetTableInfo(table)
 		c.Assert(err, IsNil)
@@ -392,7 +395,7 @@ create table t (
 		c.Assert(err, IsNil)
 		c.Assert(skip, Equals, false)
 
-		c.Assert(schemaTracker.Close(), IsNil)
+		schemaTracker.Close()
 	}
 }
 
@@ -413,10 +416,12 @@ create table t (
 	)
 
 	dbConn := dbconn.NewDBConn(&config.SubTaskConfig{}, s.baseConn)
-	schemaTracker, err := schema.NewTestTracker(ctx, "unit-test", defaultTestSessionCfg, dbConn, log.L())
+	schemaTracker, err := schema.NewTestTracker(ctx, "unit-test", dbConn, log.L())
 	c.Assert(err, IsNil)
 	c.Assert(schemaTracker.CreateSchemaIfNotExists(dbName), IsNil)
-	c.Assert(schemaTracker.Exec(ctx, dbName, tableStr), IsNil)
+	stmt, err := parseSQL(tableStr)
+	c.Assert(err, IsNil)
+	c.Assert(schemaTracker.Exec(ctx, dbName, stmt), IsNil)
 
 	ti, err := schemaTracker.GetTableInfo(table)
 	c.Assert(err, IsNil)

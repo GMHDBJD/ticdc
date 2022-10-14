@@ -22,6 +22,7 @@ import (
 	"github.com/pingcap/log"
 	"github.com/pingcap/tiflow/cdc/contextutil"
 	"github.com/pingcap/tiflow/cdc/model"
+	"github.com/pingcap/tiflow/cdc/sorter"
 	"github.com/pingcap/tiflow/pkg/config"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/util"
@@ -240,24 +241,6 @@ func (s *Sorter) AddEntry(ctx context.Context, entry *model.PolymorphicEvent) {
 	}
 }
 
-// TryAddEntry implements the EventSorter interface
-func (s *Sorter) TryAddEntry(ctx context.Context, entry *model.PolymorphicEvent) (bool, error) {
-	// add two select to guarantee the done/close condition is checked first.
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-s.closeCh:
-		return false, cerror.ErrSorterClosed.GenWithStackByArgs()
-	default:
-	}
-	select {
-	case s.inputCh <- entry:
-		return true, nil
-	default:
-		return false, nil
-	}
-}
-
 // Output implements the EventSorter interface
 func (s *Sorter) Output() <-chan *model.PolymorphicEvent {
 	return s.outputCh
@@ -281,3 +264,6 @@ func RunWorkerPool(ctx context.Context) error {
 
 // EmitStartTs implement sorter interface
 func (s *Sorter) EmitStartTs(ctx context.Context, ts uint64) {}
+
+// Stats implement sorter interface
+func (s *Sorter) Stats() sorter.Stats { return sorter.Stats{} }

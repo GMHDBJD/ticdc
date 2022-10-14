@@ -13,13 +13,13 @@ on:
 jobs:
   upstream-database-switch:
     name: upstream-database-switch
-    runs-on: ubuntu-18.04
+    runs-on: ubuntu-20.04
 
     steps:
-      - name: Set up Go 1.18
+      - name: Set up Go 1.19
         uses: actions/setup-go@v3
         with:
-          go-version: 1.18
+          go-version: 1.19
 
       - name: Check out code
         uses: actions/checkout@v2

@@ -15,15 +15,12 @@ package master
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
-	"golang.org/x/time/rate"
-
 	"github.com/pingcap/tiflow/engine/framework/config"
 	"github.com/pingcap/tiflow/engine/framework/metadata"
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
@@ -32,6 +29,9 @@ import (
 	pkgOrm "github.com/pingcap/tiflow/engine/pkg/orm"
 	"github.com/pingcap/tiflow/engine/pkg/p2p"
 	derror "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/stretchr/testify/require"
+	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 type workerManageTestSuite struct {
@@ -49,12 +49,15 @@ func (s *workerManageTestSuite) AdvanceClockBy(duration time.Duration) {
 }
 
 func (s *workerManageTestSuite) SimulateHeartbeat(
-	workerID frameModel.WorkerID, epoch frameModel.Epoch, node p2p.NodeID, isFinished bool,
+	workerID frameModel.WorkerID,
+	epoch frameModel.Epoch, workerEpoch frameModel.Epoch,
+	node p2p.NodeID, isFinished bool,
 ) {
 	s.manager.HandleHeartbeat(&frameModel.HeartbeatPingMessage{
 		SendTime:     s.clock.Mono(),
 		FromWorkerID: workerID,
 		Epoch:        epoch,
+		WorkerEpoch:  workerEpoch,
 		IsFinished:   isFinished,
 	}, node)
 }
@@ -235,11 +238,12 @@ func TestCreateWorkerAndWorkerOnline(t *testing.T) {
 	t.Parallel()
 
 	suite := NewWorkerManageTestSuite(true)
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	wEpoch := int64(2)
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", wEpoch)
 
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
 
 	event := suite.WaitForEvent(t, "worker-1")
 	require.Equal(t, workerOnlineEvent, event.Tp)
@@ -250,7 +254,7 @@ func TestCreateWorkerAndWorkerTimesOut(t *testing.T) {
 	t.Parallel()
 
 	suite := NewWorkerManageTestSuite(true)
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", 2)
 	suite.AdvanceClockBy(30 * time.Second)
 	suite.AdvanceClockBy(30 * time.Second)
 	suite.AdvanceClockBy(30 * time.Second)
@@ -283,21 +287,22 @@ func TestCreateWorkerAndWorkerStatusUpdatedAndTimesOut(t *testing.T) {
 	t.Parallel()
 
 	suite := NewWorkerManageTestSuite(true)
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	wEpoch := int64(2)
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", wEpoch)
 
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
 
 	event := suite.WaitForEvent(t, "worker-1")
 	require.Equal(t, workerOnlineEvent, event.Tp)
 
 	err := suite.SimulateWorkerUpdateStatus("worker-1", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusFinished,
+		State: frameModel.WorkerStateFinished,
 	}, 1)
 	require.NoError(t, err)
 
 	event = suite.WaitForEvent(t, "worker-1")
 	require.Equal(t, workerStatusUpdatedEvent, event.Tp)
-	require.Equal(t, frameModel.WorkerStatusFinished, event.Handle.Status().Code)
+	require.Equal(t, frameModel.WorkerStateFinished, event.Handle.Status().State)
 
 	suite.AdvanceClockBy(30 * time.Second)
 	event = suite.WaitForEvent(t, "worker-1")
@@ -316,19 +321,23 @@ func TestRecoverAfterFailover(t *testing.T) {
 
 	suite := NewWorkerManageTestSuite(false)
 	err := suite.PutMeta("worker-1", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusNormal,
+		State: frameModel.WorkerStateNormal,
+		Epoch: 11,
 	})
 	require.NoError(t, err)
 	err = suite.PutMeta("worker-2", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusNormal,
+		State: frameModel.WorkerStateNormal,
+		Epoch: 12,
 	})
 	require.NoError(t, err)
 	err = suite.PutMeta("worker-3", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusNormal,
+		State: frameModel.WorkerStateNormal,
+		Epoch: 13,
 	})
 	require.NoError(t, err)
 	err = suite.PutMeta("worker-4", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusNormal,
+		State: frameModel.WorkerStateNormal,
+		Epoch: 14,
 	})
 	require.NoError(t, err)
 
@@ -340,9 +349,9 @@ func TestRecoverAfterFailover(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
-		suite.SimulateHeartbeat("worker-2", 1, "executor-2", false)
-		suite.SimulateHeartbeat("worker-3", 1, "executor-3", false)
+		suite.SimulateHeartbeat("worker-1", 1, 11, "executor-1", false)
+		suite.SimulateHeartbeat("worker-2", 1, 12, "executor-2", false)
+		suite.SimulateHeartbeat("worker-3", 1, 13, "executor-3", false)
 
 		select {
 		case <-doneCh:
@@ -373,8 +382,10 @@ func TestRecoverAfterFailoverFast(t *testing.T) {
 	defer cancel()
 
 	suite := NewWorkerManageTestSuite(false)
+	wEpoch := int64(100)
 	err := suite.PutMeta("worker-1", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusNormal,
+		State: frameModel.WorkerStateNormal,
+		Epoch: wEpoch,
 	})
 	require.NoError(t, err)
 
@@ -386,7 +397,7 @@ func TestRecoverAfterFailoverFast(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
+		suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
 		select {
 		case <-doneCh:
 			return true
@@ -425,7 +436,7 @@ func TestCleanTombstone(t *testing.T) {
 	ctx := context.Background()
 
 	suite := NewWorkerManageTestSuite(true)
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", 2)
 	suite.AdvanceClockBy(30 * time.Second)
 	suite.AdvanceClockBy(30 * time.Second)
 	suite.AdvanceClockBy(30 * time.Second)
@@ -436,7 +447,7 @@ func TestCleanTombstone(t *testing.T) {
 	err := event.Handle.GetTombstone().CleanTombstone(ctx)
 	require.NoError(t, err)
 
-	workerMetaClient := metadata.NewWorkerMetadataClient("master-1", suite.meta)
+	workerMetaClient := metadata.NewWorkerStatusClient("master-1", suite.meta)
 	_, err = workerMetaClient.Load(ctx, "worker-1")
 	// Asserts that the meta for the worker is indeed deleted.
 	require.Error(t, err)
@@ -447,7 +458,7 @@ func TestCleanTombstone(t *testing.T) {
 	require.NoError(t, err)
 
 	// Recreating a worker with the same name should work fine.
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", 10)
 
 	suite.Close()
 }
@@ -456,16 +467,17 @@ func TestWorkerGracefulExit(t *testing.T) {
 	t.Parallel()
 
 	suite := NewWorkerManageTestSuite(true)
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	wEpoch := int64(2)
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", wEpoch)
 
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
 
 	event := suite.WaitForEvent(t, "worker-1")
 	require.Equal(t, workerOnlineEvent, event.Tp)
 
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", true)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", true)
 	event = suite.WaitForEvent(t, "worker-1")
 	require.Equal(t, workerOfflineEvent, event.Tp)
 
@@ -476,9 +488,10 @@ func TestWorkerGracefulExitOnFirstHeartbeat(t *testing.T) {
 	t.Parallel()
 
 	suite := NewWorkerManageTestSuite(true)
-	suite.manager.BeforeStartingWorker("worker-1", "executor-1")
+	wEpoch := int64(2)
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", wEpoch)
 
-	suite.SimulateHeartbeat("worker-1", 1, "executor-1", true)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", true)
 
 	// Now we expect there to be both workerOnlineEvent and workerOfflineEvent,
 	// in that order.
@@ -497,8 +510,10 @@ func TestWorkerGracefulExitAfterFailover(t *testing.T) {
 	defer cancel()
 
 	suite := NewWorkerManageTestSuite(false)
+	wEpoch := int64(2)
 	err := suite.PutMeta("worker-1", &frameModel.WorkerStatus{
-		Code: frameModel.WorkerStatusNormal,
+		State: frameModel.WorkerStateNormal,
+		Epoch: wEpoch,
 	})
 	require.NoError(t, err)
 
@@ -510,7 +525,7 @@ func TestWorkerGracefulExitAfterFailover(t *testing.T) {
 	}()
 
 	require.Eventually(t, func() bool {
-		suite.SimulateHeartbeat("worker-1", 1, "executor-1", true)
+		suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", true)
 		select {
 		case <-doneCh:
 			return true
@@ -525,4 +540,40 @@ func TestWorkerGracefulExitAfterFailover(t *testing.T) {
 	require.Contains(t, suite.manager.GetWorkers(), "worker-1")
 	require.NotNil(t, suite.manager.GetWorkers()["worker-1"].GetTombstone())
 	suite.Close()
+}
+
+func TestWorkerSendsStaleHeartbeat(t *testing.T) {
+	t.Parallel()
+
+	suite := NewWorkerManageTestSuite(true)
+	wEpoch := int64(2)
+	suite.manager.BeforeStartingWorker("worker-1", "executor-1", wEpoch)
+
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
+	suite.SimulateHeartbeat("worker-1", 1, wEpoch, "executor-1", false)
+
+	event := suite.WaitForEvent(t, "worker-1")
+	require.Equal(t, workerOnlineEvent, event.Tp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(time.Millisecond * 20):
+				suite.SimulateHeartbeat("worker-1", 1, wEpoch-1, "executor-1", false)
+			}
+		}
+	}()
+
+	event = suite.WaitForEvent(t, "worker-1")
+	require.Equal(t, workerOfflineEvent, event.Tp)
+
+	suite.Close()
+	cancel()
+	wg.Wait()
 }

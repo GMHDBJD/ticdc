@@ -32,17 +32,16 @@ import (
 	tidbmysql "github.com/pingcap/tidb/parser/mysql"
 	"github.com/pingcap/tidb/util/dbutil"
 	"github.com/pingcap/tidb/util/filter"
-	"go.uber.org/atomic"
-	"go.uber.org/zap"
-
 	cdcmodel "github.com/pingcap/tiflow/cdc/model"
-	"github.com/pingcap/tiflow/dm/dm/config"
+	"github.com/pingcap/tiflow/dm/config"
 	"github.com/pingcap/tiflow/dm/pkg/conn"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
 	"github.com/pingcap/tiflow/pkg/sqlmodel"
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 const (

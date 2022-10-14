@@ -25,17 +25,16 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
+	cerrors "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/pingcap/tiflow/pkg/etcd"
 	"github.com/pingcap/tiflow/pkg/migrate"
+	"github.com/pingcap/tiflow/pkg/orchestrator/util"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/require"
 	"go.etcd.io/etcd/api/v3/v3rpc/rpctypes"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
-
-	cerrors "github.com/pingcap/tiflow/pkg/errors"
-	"github.com/pingcap/tiflow/pkg/etcd"
-	"github.com/pingcap/tiflow/pkg/orchestrator/util"
 )
 
 const (
@@ -259,7 +258,7 @@ func TestEtcdSum(t *testing.T) {
 				_ = cli.Unwrap().Close()
 			}()
 
-			etcdWorker, err := NewEtcdWorker(&cdcCli, testEtcdKeyPrefix, reactor, initState,
+			etcdWorker, err := NewEtcdWorker(cdcCli, testEtcdKeyPrefix, reactor, initState,
 				&migrate.NoOpMigrator{})
 			if err != nil {
 				return errors.Trace(err)
@@ -340,7 +339,7 @@ func TestLinearizability(t *testing.T) {
 		require.Nil(t, err)
 	}
 
-	reactor, err := NewEtcdWorker(&cdcCli, testEtcdKeyPrefix+"/lin", &linearizabilityReactor{
+	reactor, err := NewEtcdWorker(cdcCli, testEtcdKeyPrefix+"/lin", &linearizabilityReactor{
 		state:     nil,
 		tickCount: 999,
 	}, &intReactorState{
@@ -430,7 +429,7 @@ func TestFinished(t *testing.T) {
 	require.Nil(t, err)
 
 	prefix := testEtcdKeyPrefix + "/finished"
-	reactor, err := NewEtcdWorker(&cdcCli, prefix, &finishedReactor{
+	reactor, err := NewEtcdWorker(cdcCli, prefix, &finishedReactor{
 		prefix: prefix,
 	}, &commonReactorState{
 		state: make(map[string]string),
@@ -500,7 +499,7 @@ func TestCover(t *testing.T) {
 	require.Nil(t, err)
 
 	prefix := testEtcdKeyPrefix + "/cover"
-	reactor, err := NewEtcdWorker(&cdcCli, prefix, &coverReactor{
+	reactor, err := NewEtcdWorker(cdcCli, prefix, &coverReactor{
 		prefix: prefix,
 	}, &commonReactorState{
 		state: make(map[string]string),
@@ -579,7 +578,7 @@ func TestEmptyTxn(t *testing.T) {
 	require.Nil(t, err)
 
 	prefix := testEtcdKeyPrefix + "/empty_txn"
-	reactor, err := NewEtcdWorker(&cdcCli, prefix, &emptyTxnReactor{
+	reactor, err := NewEtcdWorker(cdcCli, prefix, &emptyTxnReactor{
 		prefix: prefix,
 		cli:    cli,
 	}, &commonReactorState{
@@ -648,7 +647,7 @@ func TestEmptyOrNil(t *testing.T) {
 	require.Nil(t, err)
 
 	prefix := testEtcdKeyPrefix + "/emptyOrNil"
-	reactor, err := NewEtcdWorker(&cdcCli, prefix, &emptyOrNilReactor{
+	reactor, err := NewEtcdWorker(cdcCli, prefix, &emptyOrNilReactor{
 		prefix: prefix,
 	}, &commonReactorState{
 		state: make(map[string]string),
@@ -729,7 +728,7 @@ func TestModifyAfterDelete(t *testing.T) {
 		value:    []byte("modified value"),
 		waitOnCh: make(chan struct{}),
 	}
-	worker1, err := NewEtcdWorker(&cdcCli1, "/test", modifyReactor, &commonReactorState{
+	worker1, err := NewEtcdWorker(cdcCli1, "/test", modifyReactor, &commonReactorState{
 		state: make(map[string]string),
 	}, &migrate.NoOpMigrator{})
 	require.Nil(t, err)
@@ -748,7 +747,7 @@ func TestModifyAfterDelete(t *testing.T) {
 		key:   []byte("/test/key1"),
 		value: nil, // deletion
 	}
-	worker2, err := NewEtcdWorker(&cdcCli2, "/test", deleteReactor, &commonReactorState{
+	worker2, err := NewEtcdWorker(cdcCli2, "/test", deleteReactor, &commonReactorState{
 		state: make(map[string]string),
 	}, &migrate.NoOpMigrator{})
 	require.Nil(t, err)

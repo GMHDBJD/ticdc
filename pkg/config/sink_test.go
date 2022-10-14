@@ -109,7 +109,15 @@ func TestValidateApplyParameter(t *testing.T) {
 		},
 		{
 			sinkURI:     "tidb://normal:123456@127.0.0.1:3306?protocol=canal",
-			expectedErr: ".*protocol cannot be configured when using tidb scheme.*",
+			expectedErr: ".*protocol canal is incompatible with tidb scheme.*",
+		},
+		{
+			sinkURI:     "tidb://normal:123456@127.0.0.1:3306?protocol=default",
+			expectedErr: ".*protocol default is incompatible with tidb scheme.*",
+		},
+		{
+			sinkURI:     "tidb://normal:123456@127.0.0.1:3306?protocol=random",
+			expectedErr: ".*protocol .* is incompatible with tidb scheme.*",
 		},
 		{
 			sinkURI:       "blackhole://normal:123456@127.0.0.1:3306?transaction-atomicity=none",
@@ -123,19 +131,13 @@ func TestValidateApplyParameter(t *testing.T) {
 			expectedLevel: noneTxnAtomicity,
 		},
 		{
-			sinkURI: "pulsar://127.0.0.1:9092?transaction-atomicity=table" +
-				"&protocol=open-protocol",
-			expectedErr:   "",
-			expectedLevel: noneTxnAtomicity,
-		},
-		{
 			sinkURI:       "kafka://127.0.0.1:9092?protocol=default",
 			expectedErr:   "",
 			expectedLevel: noneTxnAtomicity,
 		},
 		{
 			sinkURI:     "kafka://127.0.0.1:9092?transaction-atomicity=table",
-			expectedErr: ".*unknown .* protocol for Message Queue sink.*",
+			expectedErr: ".*unknown .* message protocol for sink.*",
 		},
 	}
 
@@ -149,5 +151,133 @@ func TestValidateApplyParameter(t *testing.T) {
 		} else {
 			require.Regexp(t, tc.expectedErr, cfg.validateAndAdjust(parsedSinkURI, true))
 		}
+	}
+}
+
+func TestApplyParameter(t *testing.T) {
+	t.Parallel()
+	testCases := []struct {
+		sinkConfig *SinkConfig
+		sinkURI    string
+		result     string
+	}{
+		{
+			sinkConfig: &SinkConfig{
+				Protocol: "default",
+			},
+			sinkURI: "kafka://127.0.0.1:9092?protocol=whatever",
+			result:  "whatever",
+		},
+		{
+			sinkConfig: &SinkConfig{},
+			sinkURI:    "kafka://127.0.0.1:9092?protocol=default",
+			result:     "default",
+		},
+		{
+			sinkConfig: &SinkConfig{
+				Protocol: "default",
+			},
+			sinkURI: "kafka://127.0.0.1:9092",
+			result:  "default",
+		},
+	}
+	for _, c := range testCases {
+		parsedSinkURI, err := url.Parse(c.sinkURI)
+		require.Nil(t, err)
+		c.sinkConfig.applyParameter(parsedSinkURI)
+		require.Equal(t, c.result, c.sinkConfig.Protocol)
+	}
+}
+
+func TestValidateAndAdjuctCSVConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  *CSVConfig
+		wantErr string
+	}{
+		{
+			name: "valid quote",
+			config: &CSVConfig{
+				Quote:     "\"",
+				Delimiter: ",",
+			},
+			wantErr: "",
+		},
+		{
+			name: "quote has multiple characters",
+			config: &CSVConfig{
+				Quote: "***",
+			},
+			wantErr: "csv config quote contains more than one character",
+		},
+		{
+			name: "quote contains line break character",
+			config: &CSVConfig{
+				Quote: "\n",
+			},
+			wantErr: "csv config quote cannot be line break character",
+		},
+		{
+			name: "valid delimiter1",
+			config: &CSVConfig{
+				Quote:     "\"",
+				Delimiter: ",",
+			},
+			wantErr: "",
+		},
+		{
+			name: "delimiter is empty",
+			config: &CSVConfig{
+				Quote:     "'",
+				Delimiter: "",
+			},
+			wantErr: "csv config delimiter cannot be empty",
+		},
+		{
+			name: "delimiter contains line break character",
+			config: &CSVConfig{
+				Quote:     "'",
+				Delimiter: "\r",
+			},
+			wantErr: "csv config delimiter contains line break characters",
+		},
+		{
+			name: "delimiter and quote are same",
+			config: &CSVConfig{
+				Quote:     "'",
+				Delimiter: "'",
+			},
+			wantErr: "csv config quote and delimiter cannot be the same",
+		},
+		{
+			name: "valid date separator",
+			config: &CSVConfig{
+				Quote:         "\"",
+				Delimiter:     ",",
+				DateSeparator: "day",
+			},
+			wantErr: "",
+		},
+		{
+			name: "date separator is not in [day/month/year/none]",
+			config: &CSVConfig{
+				Quote:         "\"",
+				Delimiter:     ",",
+				DateSeparator: "hello",
+			},
+			wantErr: "date separator in cloud storage sink is invalid",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &SinkConfig{
+				CSVConfig: tc.config,
+			}
+			if tc.wantErr == "" {
+				require.Nil(t, s.validateAndAdjustCSVConfig())
+			} else {
+				require.Regexp(t, tc.wantErr, s.validateAndAdjustCSVConfig())
+			}
+		})
 	}
 }

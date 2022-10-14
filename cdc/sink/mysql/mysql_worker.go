@@ -20,20 +20,19 @@ import (
 
 	"github.com/pingcap/errors"
 	"github.com/pingcap/log"
-	"github.com/prometheus/client_golang/prometheus"
-	"go.uber.org/atomic"
-	"go.uber.org/zap"
-
 	"github.com/pingcap/tiflow/cdc/model"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
 	"github.com/pingcap/tiflow/pkg/notify"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 type mysqlSinkWorker struct {
 	txnCh            chan *model.SingleTableTxn
 	maxTxnRow        int
 	bucket           int
-	execDMLs         func(context.Context, []*model.RowChangedEvent, uint64, int) error
+	execDMLs         func(context.Context, []*model.RowChangedEvent, int) error
 	metricBucketSize prometheus.Counter
 	receiver         *notify.Receiver
 	closedCh         chan struct{}
@@ -45,7 +44,7 @@ func newMySQLSinkWorker(
 	bucket int,
 	metricBucketSize prometheus.Counter,
 	receiver *notify.Receiver,
-	execDMLs func(context.Context, []*model.RowChangedEvent, uint64, int) error,
+	execDMLs func(context.Context, []*model.RowChangedEvent, int) error,
 ) *mysqlSinkWorker {
 	return &mysqlSinkWorker{
 		txnCh:            make(chan *model.SingleTableTxn, 1024),
@@ -84,7 +83,6 @@ func (w *mysqlSinkWorker) isNormal() bool {
 func (w *mysqlSinkWorker) run(ctx context.Context) (err error) {
 	var (
 		toExecRows []*model.RowChangedEvent
-		replicaID  uint64
 		txnNum     int
 	)
 
@@ -116,7 +114,7 @@ func (w *mysqlSinkWorker) run(ctx context.Context) (err error) {
 		if len(toExecRows) == 0 {
 			return nil
 		}
-		err := w.execDMLs(ctx, toExecRows, replicaID, w.bucket)
+		err := w.execDMLs(ctx, toExecRows, w.bucket)
 		if err != nil {
 			txnNum = 0
 			return err
@@ -144,14 +142,13 @@ func (w *mysqlSinkWorker) run(ctx context.Context) (err error) {
 				txn.FinishWg.Done()
 				continue
 			}
-			if txn.ReplicaID != replicaID || len(toExecRows)+len(txn.Rows) > w.maxTxnRow {
+			if len(toExecRows)+len(txn.Rows) > w.maxTxnRow {
 				if err := flushRows(); err != nil {
 					txnNum++
 					w.hasError.Store(true)
 					return errors.Trace(err)
 				}
 			}
-			replicaID = txn.ReplicaID
 			toExecRows = append(toExecRows, txn.Rows...)
 			txnNum++
 		case <-w.receiver.C:

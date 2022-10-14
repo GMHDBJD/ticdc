@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/pingcap/tiflow/cdc/api/owner"
+	"github.com/pingcap/tiflow/cdc/model"
 	apiv1client "github.com/pingcap/tiflow/pkg/api/v1"
 	"github.com/pingcap/tiflow/pkg/cmd/context"
 	"github.com/pingcap/tiflow/pkg/cmd/factory"
@@ -64,17 +65,20 @@ func (o *listChangefeedOptions) complete(f factory.Factory) error {
 // run the `cli changefeed list` command.
 func (o *listChangefeedOptions) run(cmd *cobra.Command) error {
 	ctx := context.GetDefaultContext()
-	state := ""
-	if o.listAll {
-		state = "all"
-	}
-	raw, err := o.apiClient.Changefeeds().List(ctx, state)
+
+	raw, err := o.apiClient.Changefeeds().List(ctx, "all")
 	if err != nil {
 		return err
 	}
 	cfs := make([]*changefeedCommonInfo, 0, len(*raw))
 
 	for _, cf := range *raw {
+		if !o.listAll {
+			if cf.FeedState == model.StateFinished ||
+				cf.FeedState == model.StateRemoved {
+				continue
+			}
+		}
 		cfci := &changefeedCommonInfo{
 			ID:        cf.ID,
 			Namespace: cf.Namespace,
@@ -99,13 +103,9 @@ func newCmdListChangefeed(f factory.Factory) *cobra.Command {
 		Use:   "list",
 		Short: "List all replication tasks (changefeeds) in TiCDC cluster",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			err := o.complete(f)
-			if err != nil {
-				return err
-			}
-
-			return o.run(cmd)
+		Run: func(cmd *cobra.Command, args []string) {
+			util.CheckErr(o.complete(f))
+			util.CheckErr(o.run(cmd))
 		},
 	}
 

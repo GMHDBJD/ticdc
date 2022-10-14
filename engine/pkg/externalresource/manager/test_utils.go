@@ -19,38 +19,41 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stretchr/testify/require"
-
+	"github.com/pingcap/errors"
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	"github.com/pingcap/tiflow/engine/model"
-	resModel "github.com/pingcap/tiflow/engine/pkg/externalresource/resourcemeta/model"
+	"github.com/pingcap/tiflow/engine/pkg/externalresource/internal"
+	resModel "github.com/pingcap/tiflow/engine/pkg/externalresource/model"
 	"github.com/pingcap/tiflow/engine/pkg/notifier"
+	pkgOrm "github.com/pingcap/tiflow/engine/pkg/orm"
+	"github.com/stretchr/testify/require"
 )
 
 // MockExecutorInfoProvider implements ExecutorInfoProvider interface
 type MockExecutorInfoProvider struct {
 	mu          sync.RWMutex
-	executorSet map[resModel.ExecutorID]struct{}
+	executorSet map[resModel.ExecutorID]string
 	notifier    *notifier.Notifier[model.ExecutorStatusChange]
 }
 
 // NewMockExecutorInfoProvider creates a new MockExecutorInfoProvider instance
 func NewMockExecutorInfoProvider() *MockExecutorInfoProvider {
 	return &MockExecutorInfoProvider{
-		executorSet: make(map[resModel.ExecutorID]struct{}),
+		executorSet: make(map[resModel.ExecutorID]string),
 		notifier:    notifier.NewNotifier[model.ExecutorStatusChange](),
 	}
 }
 
 // AddExecutor adds an executor to the mock.
-func (p *MockExecutorInfoProvider) AddExecutor(executorID string) {
+func (p *MockExecutorInfoProvider) AddExecutor(executorID string, addr string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.executorSet[resModel.ExecutorID(executorID)] = struct{}{}
+	p.executorSet[resModel.ExecutorID(executorID)] = addr
 	p.notifier.Notify(model.ExecutorStatusChange{
-		ID: model.ExecutorID(executorID),
-		Tp: model.EventExecutorOnline,
+		ID:   model.ExecutorID(executorID),
+		Tp:   model.EventExecutorOnline,
+		Addr: addr,
 	})
 }
 
@@ -59,10 +62,12 @@ func (p *MockExecutorInfoProvider) RemoveExecutor(executorID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	addr := p.executorSet[resModel.ExecutorID(executorID)]
 	delete(p.executorSet, resModel.ExecutorID(executorID))
 	p.notifier.Notify(model.ExecutorStatusChange{
-		ID: model.ExecutorID(executorID),
-		Tp: model.EventExecutorOffline,
+		ID:   model.ExecutorID(executorID),
+		Tp:   model.EventExecutorOffline,
+		Addr: addr,
 	})
 }
 
@@ -89,13 +94,13 @@ func (p *MockExecutorInfoProvider) ListExecutors() (ret []string) {
 // WatchExecutors implements ExecutorManager.WatchExecutors
 func (p *MockExecutorInfoProvider) WatchExecutors(
 	ctx context.Context,
-) ([]model.ExecutorID, *notifier.Receiver[model.ExecutorStatusChange], error) {
+) (map[model.ExecutorID]string, *notifier.Receiver[model.ExecutorStatusChange], error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var executors []model.ExecutorID
-	for id := range p.executorSet {
-		executors = append(executors, id)
+	executors := make(map[model.ExecutorID]string, len(p.executorSet))
+	for id, addr := range p.executorSet {
+		executors[id] = addr
 	}
 
 	return executors, p.notifier.NewReceiver(), nil
@@ -159,21 +164,27 @@ func (jp *MockJobStatusProvider) WatchJobStatuses(
 	return snapCopy, jp.notifier.NewReceiver(), nil
 }
 
-// MockGCNotifier implements the interface GCNotifier.
-type MockGCNotifier struct {
+// MockGCRunner implements the interface GCRunner.
+type MockGCRunner struct {
+	GCRunner
 	notifyCh chan struct{}
 }
 
-// NewMockGCNotifier returns a new MockGCNotifier
-func NewMockGCNotifier() *MockGCNotifier {
-	return &MockGCNotifier{
+// NewMockGCRunner returns a new MockGCNotifier
+func NewMockGCRunner(resClient pkgOrm.ResourceClient) *MockGCRunner {
+	runner := NewGCRunner(resClient, nil, nil)
+	runner.gcHandlers[resModel.ResourceTypeS3] = &mockResourceController{
+		gcExecutorCh: make(chan []*resModel.ResourceMeta, 128),
+	}
+	return &MockGCRunner{
+		GCRunner: runner,
 		notifyCh: make(chan struct{}, 1),
 	}
 }
 
 // GCNotify pushes a new notification to the internal channel so
 // it can be waited on by WaitNotify().
-func (n *MockGCNotifier) GCNotify() {
+func (n *MockGCRunner) GCNotify() {
 	select {
 	case n.notifyCh <- struct{}{}:
 	default:
@@ -181,7 +192,7 @@ func (n *MockGCNotifier) GCNotify() {
 }
 
 // WaitNotify waits for a pending notification with timeout.
-func (n *MockGCNotifier) WaitNotify(t *testing.T, timeout time.Duration) {
+func (n *MockGCRunner) WaitNotify(t *testing.T, timeout time.Duration) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
@@ -190,4 +201,32 @@ func (n *MockGCNotifier) WaitNotify(t *testing.T, timeout time.Duration) {
 		require.FailNow(t, "WaitNotify has timed out")
 	case <-n.notifyCh:
 	}
+}
+
+type mockResourceController struct {
+	internal.ResourceController
+	gcRequestCh  chan *resModel.ResourceMeta
+	gcExecutorCh chan []*resModel.ResourceMeta
+}
+
+func (r *mockResourceController) GCSingleResource(
+	ctx context.Context, res *resModel.ResourceMeta,
+) error {
+	select {
+	case <-ctx.Done():
+		return errors.Trace(ctx.Err())
+	case r.gcRequestCh <- res:
+	}
+	return nil
+}
+
+func (r *mockResourceController) GCExecutor(
+	ctx context.Context, resources []*resModel.ResourceMeta, executorID model.ExecutorID,
+) error {
+	select {
+	case <-ctx.Done():
+		return errors.Trace(ctx.Err())
+	case r.gcExecutorCh <- resources:
+	}
+	return nil
 }

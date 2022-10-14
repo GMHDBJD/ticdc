@@ -26,6 +26,7 @@ type capture struct {
 	ID            string `json:"id"`
 	IsOwner       bool   `json:"is-owner"`
 	AdvertiseAddr string `json:"address"`
+	ClusterID     string `json:"cluster-id"`
 }
 
 // listCaptureOptions defines flags for the `cli capture list` command.
@@ -59,7 +60,12 @@ func (o *listCaptureOptions) run(cmd *cobra.Command) error {
 	captures := make([]*capture, 0, len(*raw))
 	for _, c := range *raw {
 		captures = append(captures,
-			&capture{ID: c.ID, IsOwner: c.IsOwner, AdvertiseAddr: c.AdvertiseAddr})
+			&capture{
+				ID:            c.ID,
+				IsOwner:       c.IsOwner,
+				AdvertiseAddr: c.AdvertiseAddr,
+				ClusterID:     c.ClusterID,
+			})
 	}
 
 	return util.JSONPrint(cmd, captures)
@@ -73,13 +79,9 @@ func newCmdListCapture(f factory.Factory) *cobra.Command {
 		Use:   "list",
 		Short: "List all captures in TiCDC cluster",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			err := o.complete(f)
-			if err != nil {
-				return err
-			}
-
-			return o.run(cmd)
+		Run: func(cmd *cobra.Command, args []string) {
+			util.CheckErr(o.complete(f))
+			util.CheckErr(o.run(cmd))
 		},
 	}
 

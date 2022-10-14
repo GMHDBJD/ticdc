@@ -34,7 +34,7 @@ func TestCheckCaptureAlive(t *testing.T) {
 	stateTester := NewReactorStateTester(t, state, nil)
 	state.CheckCaptureAlive("6bbc01c8-0605-4f86-a0f9-b3119109b225")
 	require.Contains(t, stateTester.ApplyPatches().Error(), "[CDC:ErrLeaseExpired]")
-	err := stateTester.Update(fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix)+
+	err := stateTester.Update(etcd.DefaultClusterAndMetaPrefix+
 		"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
 		[]byte(`{"id":"6bbc01c8-0605-4f86-a0f9-b3119109b225","address":"127.0.0.1:8300"}`))
 	require.Nil(t, err)
@@ -62,8 +62,7 @@ func TestChangefeedStateUpdate(t *testing.T) {
             "rules": [
                 "*.*"
             ],
-            "ignore-txn-start-ts": null,
-            "ddl-allow-list": null
+            "ignore-txn-start-ts": null
         },
         "mounter": {
             "worker-num": 16
@@ -95,13 +94,13 @@ func TestChangefeedStateUpdate(t *testing.T) {
 		{ // common case
 			changefeedID: "test1",
 			updateKey: []string{
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/info/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/status/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
 			},
 			updateValue: []string{
@@ -114,12 +113,11 @@ func TestChangefeedStateUpdate(t *testing.T) {
 				ClusterID: etcd.DefaultCDCClusterID,
 				ID:        model.DefaultChangeFeedID("test1"),
 				Info: &model.ChangeFeedInfo{
-					SinkURI:           "blackhole://",
-					CreateTime:        createTime,
-					StartTs:           421980685886554116,
-					Engine:            model.SortInMemory,
-					State:             "normal",
-					SyncPointInterval: time.Minute * 10,
+					SinkURI:    "blackhole://",
+					CreateTime: createTime,
+					StartTs:    421980685886554116,
+					Engine:     model.SortInMemory,
+					State:      "normal",
 					Config: &config.ReplicaConfig{
 						CaseSensitive:    true,
 						CheckGCSafePoint: true,
@@ -138,17 +136,17 @@ func TestChangefeedStateUpdate(t *testing.T) {
 		{ // test multiple capture
 			changefeedID: "test1",
 			updateKey: []string{
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/info/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/status/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/666777888/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/666777888",
 			},
 			updateValue: []string{
@@ -163,12 +161,11 @@ func TestChangefeedStateUpdate(t *testing.T) {
 				ClusterID: etcd.DefaultCDCClusterID,
 				ID:        model.DefaultChangeFeedID("test1"),
 				Info: &model.ChangeFeedInfo{
-					SinkURI:           "blackhole://",
-					CreateTime:        createTime,
-					StartTs:           421980685886554116,
-					Engine:            model.SortInMemory,
-					State:             "normal",
-					SyncPointInterval: time.Minute * 10,
+					SinkURI:    "blackhole://",
+					CreateTime: createTime,
+					StartTs:    421980685886554116,
+					Engine:     model.SortInMemory,
+					State:      "normal",
 					Config: &config.ReplicaConfig{
 						CaseSensitive:    true,
 						CheckGCSafePoint: true,
@@ -188,21 +185,20 @@ func TestChangefeedStateUpdate(t *testing.T) {
 		{ // testing changefeedID not match
 			changefeedID: "test1",
 			updateKey: []string{
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/info/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/status/test1",
 
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/info/test-fake",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/status/test-fake",
-
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test-fake",
 			},
 			updateValue: []string{
@@ -218,12 +214,11 @@ func TestChangefeedStateUpdate(t *testing.T) {
 				ClusterID: etcd.DefaultCDCClusterID,
 				ID:        model.DefaultChangeFeedID("test1"),
 				Info: &model.ChangeFeedInfo{
-					SinkURI:           "blackhole://",
-					CreateTime:        createTime,
-					StartTs:           421980685886554116,
-					Engine:            model.SortInMemory,
-					State:             "normal",
-					SyncPointInterval: time.Minute * 10,
+					SinkURI:    "blackhole://",
+					CreateTime: createTime,
+					StartTs:    421980685886554116,
+					Engine:     model.SortInMemory,
+					State:      "normal",
 					Config: &config.ReplicaConfig{
 						CaseSensitive:    true,
 						CheckGCSafePoint: true,
@@ -242,24 +237,23 @@ func TestChangefeedStateUpdate(t *testing.T) {
 		{ // testing value is nil
 			changefeedID: "test1",
 			updateKey: []string{
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/info/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/status/test1",
-
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/666777888/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/info/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/changefeed/status/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
 			},
 			updateValue: []string{
@@ -440,17 +434,17 @@ func TestGlobalStateUpdate(t *testing.T) {
 	}{
 		{ // common case
 			updateKey: []string{
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/owner/22317526c4fc9a37",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/owner/22317526c4fc9a38",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test2",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/upstream/12345",
 			},
 			updateValue: []string{
@@ -496,21 +490,21 @@ func TestGlobalStateUpdate(t *testing.T) {
 		},
 		{ // testing remove changefeed
 			updateKey: []string{
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/owner/22317526c4fc9a37",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/owner/22317526c4fc9a38",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test2",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/owner/22317526c4fc9a37",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndNamespacePrefix) +
+				etcd.DefaultClusterAndNamespacePrefix +
 					"/task/position/6bbc01c8-0605-4f86-a0f9-b3119109b225/test1",
-				fmt.Sprintf("%s", etcd.DefaultClusterAndMetaPrefix) +
+				etcd.DefaultClusterAndMetaPrefix +
 					"/capture/6bbc01c8-0605-4f86-a0f9-b3119109b225",
 			},
 			updateValue: []string{

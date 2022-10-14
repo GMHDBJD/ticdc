@@ -20,13 +20,12 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
-	"go.uber.org/atomic"
-	"go.uber.org/zap"
-
 	"github.com/pingcap/log"
 	frameErrors "github.com/pingcap/tiflow/engine/framework/internal/errors"
 	"github.com/pingcap/tiflow/engine/pkg/clock"
 	derrors "github.com/pingcap/tiflow/pkg/errors"
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 const (
@@ -67,8 +66,15 @@ func (r *Runner[R]) Run(ctx context.Context) error {
 		r.doGracefulExit(ctx, err)
 	}
 
-	if closeErr := r.task.Close(context.Background()); closeErr != nil {
-		log.Warn("Closing task returned error", zap.String("label", r.task.ID()))
+	if IsTerminatedError(err) {
+		if stopErr := r.task.Stop(context.Background()); stopErr != nil {
+			log.Warn("Stop task returned error",
+				zap.String("label", r.task.ID()), zap.Error(stopErr))
+		}
+	} else {
+		if closeErr := r.task.Close(context.Background()); closeErr != nil {
+			log.Warn("Closing task returned error", zap.String("label", r.task.ID()))
+		}
 	}
 
 	return err
@@ -99,7 +105,7 @@ func (r *Runner[R]) doGracefulExit(ctx context.Context, errIn error) {
 	defer cancel()
 
 	err := r.task.NotifyExit(timeoutCtx, errIn)
-	if !gerrors.Is(err, context.Canceled) {
+	if err != nil && !gerrors.Is(err, context.Canceled) {
 		log.Error("an error is encountered when a task is already exiting",
 			zap.Error(err), zap.NamedError("original-err", errIn))
 	}
@@ -117,4 +123,12 @@ func isForcefulExitError(errIn error) bool {
 
 	// Suicides should result in a forceful exit.
 	return derrors.ErrWorkerSuicide.Equal(errIn)
+}
+
+// IsTerminatedError checks whether task enters a terminated state, which include
+// finished, canceled
+func IsTerminatedError(errIn error) bool {
+	return derrors.ErrWorkerCancel.Equal(errIn) ||
+		derrors.ErrWorkerFinish.Equal(errIn) ||
+		derrors.ErrWorkerFailed.Equal(errIn)
 }

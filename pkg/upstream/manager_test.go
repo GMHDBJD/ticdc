@@ -17,7 +17,6 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/benbjohnson/clock"
 	"github.com/pingcap/errors"
@@ -26,6 +25,7 @@ import (
 	"github.com/pingcap/tiflow/pkg/security"
 	"github.com/pingcap/tiflow/pkg/txnutil/gc"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/atomic"
 )
 
 func TestUpstream(t *testing.T) {
@@ -57,12 +57,12 @@ func TestUpstream(t *testing.T) {
 	// test Tick
 	_ = manager.Tick(context.Background(), &orchestrator.GlobalReactorState{})
 	mockClock.Add(maxIdleDuration * 2)
-	manager.lastTickTime = time.Time{}
+	manager.lastTickTime = atomic.Time{}
 	_ = manager.Tick(context.Background(), &orchestrator.GlobalReactorState{})
 	// wait until up2 is closed
 	for !up2.IsClosed() {
 	}
-	manager.lastTickTime = time.Time{}
+	manager.lastTickTime = atomic.Time{}
 	_ = manager.Tick(context.Background(), &orchestrator.GlobalReactorState{})
 	_ = manager.Tick(context.Background(), &orchestrator.GlobalReactorState{})
 	up, ok = manager.Get(testID)
@@ -134,7 +134,7 @@ func TestAddUpstream(t *testing.T) {
 	) error {
 		return errors.New("test")
 	}
-	up := m.AddUpstream(uint64(3), &model.UpstreamInfo{})
+	up := m.AddUpstream(&model.UpstreamInfo{ID: uint64(3)})
 	require.NotNil(t, up)
 	up1, ok := m.Get(uint64(3))
 	require.NotNil(t, up1)
@@ -172,11 +172,11 @@ func TestRemoveThenAddAgain(t *testing.T) {
 	) error {
 		return nil
 	}
-	up := m.AddUpstream(uint64(3), &model.UpstreamInfo{})
+	up := m.AddUpstream(&model.UpstreamInfo{ID: uint64(3)})
 	require.NotNil(t, up)
 	// test Tick
 	_ = m.Tick(context.Background(), &orchestrator.GlobalReactorState{})
 	require.False(t, up.idleTime.IsZero())
-	_ = m.AddUpstream(uint64(3), &model.UpstreamInfo{})
+	_ = m.AddUpstream(&model.UpstreamInfo{ID: uint64(3)})
 	require.True(t, up.idleTime.IsZero())
 }

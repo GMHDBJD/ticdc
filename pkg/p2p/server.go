@@ -20,11 +20,12 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/coreos/go-semver/semver"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/failpoint"
 	"github.com/pingcap/log"
 	cerror "github.com/pingcap/tiflow/pkg/errors"
+	"github.com/pingcap/tiflow/pkg/workerpool"
+	"github.com/pingcap/tiflow/proto/p2p"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 	"golang.org/x/sync/errgroup"
@@ -32,9 +33,6 @@ import (
 	"google.golang.org/grpc/codes"
 	gRPCPeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
-
-	"github.com/pingcap/tiflow/pkg/workerpool"
-	"github.com/pingcap/tiflow/proto/p2p"
 )
 
 const (
@@ -232,9 +230,7 @@ func (m *MessageServer) run(ctx context.Context) error {
 			switch task := task.(type) {
 			case taskOnMessageBatch:
 				for _, entry := range task.messageEntries {
-					if err := m.handleMessage(ctx, task.streamMeta, entry); err != nil {
-						return errors.Trace(err)
-					}
+					m.handleMessage(ctx, task.streamMeta, entry)
 				}
 			case taskOnRegisterHandler:
 				// FIXME better error handling here.
@@ -242,10 +238,7 @@ func (m *MessageServer) run(ctx context.Context) error {
 				// The current error handling here will cause the server to exit, which is not ideal,
 				// but will not cause service to be interrupted because the `ctx` involved here will not
 				// be cancelled unless the server is exiting.
-				if err := m.registerHandler(ctx, task.topic, task.handler, task.done); err != nil {
-					log.Warn("registering handler failed", zap.Error(err))
-					return errors.Trace(err)
-				}
+				m.registerHandler(ctx, task.topic, task.handler, task.done)
 				log.Debug("handler registered", zap.String("topic", task.topic))
 			case taskOnDeregisterHandler:
 				if handler, ok := m.handlers[task.topic]; ok {
@@ -502,7 +495,7 @@ func (m *MessageServer) RemoveHandler(ctx context.Context, topic string) (chan s
 	return doneCh, nil
 }
 
-func (m *MessageServer) registerHandler(ctx context.Context, topic string, handler workerpool.EventHandle, doneCh chan struct{}) error {
+func (m *MessageServer) registerHandler(ctx context.Context, topic string, handler workerpool.EventHandle, doneCh chan struct{}) {
 	defer close(doneCh)
 
 	if _, ok := m.handlers[topic]; ok {
@@ -514,29 +507,22 @@ func (m *MessageServer) registerHandler(ctx context.Context, topic string, handl
 	}
 
 	m.handlers[topic] = handler
-	if err := m.handlePendingMessages(ctx, topic); err != nil {
-		return errors.Trace(err)
-	}
-	return nil
+	m.handlePendingMessages(ctx, topic)
 }
 
 // handlePendingMessages must be called with `handlerLock` taken exclusively.
-func (m *MessageServer) handlePendingMessages(ctx context.Context, topic string) error {
+func (m *MessageServer) handlePendingMessages(ctx context.Context, topic string) {
 	for key, entries := range m.pendingMessages {
 		if key.Topic != topic {
 			continue
 		}
 
 		for _, entry := range entries {
-			if err := m.handleMessage(ctx, entry.StreamMeta, entry.Entry); err != nil {
-				return errors.Trace(err)
-			}
+			m.handleMessage(ctx, entry.StreamMeta, entry.Entry)
 		}
 
 		delete(m.pendingMessages, key)
 	}
-
-	return nil
 }
 
 func (m *MessageServer) registerPeer(
@@ -687,7 +673,7 @@ func (m *MessageServer) SendMessage(stream p2p.CDCPeerToPeer_SendMessageServer) 
 	case <-ctx.Done():
 		return status.New(codes.Canceled, "context canceled").Err()
 	case <-m.closeCh:
-		return status.New(codes.Aborted, "CDC capture closing").Err()
+		return status.New(codes.Aborted, "message server is closing").Err()
 	}
 
 	// NB: `errg` will NOT be waited on because due to the limitation of grpc-go, we cannot cancel Send & Recv
@@ -768,7 +754,7 @@ func (m *MessageServer) receive(stream p2p.CDCPeerToPeer_SendMessageServer, stre
 	}
 }
 
-func (m *MessageServer) handleMessage(ctx context.Context, streamMeta *p2p.StreamMeta, entry *p2p.MessageEntry) error {
+func (m *MessageServer) handleMessage(ctx context.Context, streamMeta *p2p.StreamMeta, entry *p2p.MessageEntry) {
 	m.peerLock.RLock()
 	peer, ok := m.peers[streamMeta.SenderId]
 	m.peerLock.RUnlock()
@@ -776,12 +762,12 @@ func (m *MessageServer) handleMessage(ctx context.Context, streamMeta *p2p.Strea
 		log.Debug("p2p: message without corresponding peer",
 			zap.String("topic", entry.GetTopic()),
 			zap.Int64("seq", entry.GetSequence()))
-		return nil
+		return
 	}
 
 	// Drop messages from invalid peers
 	if !peer.valid {
-		return nil
+		return
 	}
 
 	topic := entry.GetTopic()
@@ -797,14 +783,14 @@ func (m *MessageServer) handleMessage(ctx context.Context, streamMeta *p2p.Strea
 			log.Warn("Topic congested because no handler has been registered", zap.String("topic", topic))
 			delete(m.pendingMessages, pendingMessageKey)
 			m.deregisterPeer(ctx, peer, cerror.ErrPeerMessageTopicCongested.FastGenByArgs())
-			return nil
+			return
 		}
 		m.pendingMessages[pendingMessageKey] = append(pendingEntries, pendingMessageEntry{
 			StreamMeta: streamMeta,
 			Entry:      entry,
 		})
 
-		return nil
+		return
 	}
 
 	// handler is found
@@ -816,8 +802,6 @@ func (m *MessageServer) handleMessage(ctx context.Context, streamMeta *p2p.Strea
 			zap.Error(err), zap.String("topic", topic))
 		m.deregisterPeer(ctx, peer, err)
 	}
-
-	return nil
 }
 
 func (m *MessageServer) verifyStreamMeta(streamMeta *p2p.StreamMeta) error {
@@ -830,26 +814,6 @@ func (m *MessageServer) verifyStreamMeta(streamMeta *p2p.StreamMeta) error {
 			m.serverID,            // expected
 			streamMeta.ReceiverId, // actual
 		)
-	}
-
-	if m.config.ServerVersion == "" || streamMeta.ClientVersion == "" {
-		// skip checking versions
-		return nil
-	}
-
-	clientVer, err := semver.NewVersion(streamMeta.ClientVersion)
-	if err != nil {
-		log.Error("MessageServer: semver failed to parse",
-			zap.String("ver", streamMeta.ClientVersion),
-			zap.Error(err))
-		return cerror.ErrPeerMessageIllegalClientVersion.GenWithStackByArgs(streamMeta.ClientVersion)
-	}
-
-	serverVer := semver.New(m.config.ServerVersion)
-
-	// Only allow clients with the same Major and Minor.
-	if serverVer.Major != clientVer.Major || serverVer.Minor != clientVer.Minor {
-		return cerror.ErrVersionIncompatible.GenWithStackByArgs(m.config.ServerVersion)
 	}
 
 	return nil

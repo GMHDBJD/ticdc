@@ -17,18 +17,16 @@ import (
 	"bytes"
 	"strings"
 
-	"github.com/pingcap/tidb/parser/charset"
-
-	"github.com/pingcap/tiflow/dm/pkg/log"
-	"github.com/pingcap/tiflow/dm/pkg/terror"
-	"github.com/pingcap/tiflow/dm/pkg/utils"
-
 	"github.com/pingcap/tidb/parser"
 	"github.com/pingcap/tidb/parser/ast"
+	"github.com/pingcap/tidb/parser/charset"
 	"github.com/pingcap/tidb/parser/format"
 	"github.com/pingcap/tidb/parser/model"
 	_ "github.com/pingcap/tidb/types/parser_driver" // for import parser driver
 	"github.com/pingcap/tidb/util/filter"
+	"github.com/pingcap/tiflow/dm/pkg/log"
+	"github.com/pingcap/tiflow/dm/pkg/terror"
+	"github.com/pingcap/tiflow/dm/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -72,6 +70,9 @@ type tableNameExtractor struct {
 }
 
 func (tne *tableNameExtractor) Enter(in ast.Node) (ast.Node, bool) {
+	if _, ok := in.(*ast.ReferenceDef); ok {
+		return in, true
+	}
 	if t, ok := in.(*ast.TableName); ok {
 		var tb *filter.Table
 		if tne.flavor == utils.LCTableNamesSensitive {
@@ -106,13 +107,14 @@ func FetchDDLTables(schema string, stmt ast.StmtNode, flavor utils.LowerCaseTabl
 	}
 
 	// special cases: schema related SQLs doesn't have tableName
+	// todo: pass .O or .L of table name depends on flavor
 	switch v := stmt.(type) {
 	case *ast.AlterDatabaseStmt:
-		return []*filter.Table{genTableName(v.Name, "")}, nil
+		return []*filter.Table{genTableName(v.Name.O, "")}, nil
 	case *ast.CreateDatabaseStmt:
-		return []*filter.Table{genTableName(v.Name, "")}, nil
+		return []*filter.Table{genTableName(v.Name.O, "")}, nil
 	case *ast.DropDatabaseStmt:
-		return []*filter.Table{genTableName(v.Name, "")}, nil
+		return []*filter.Table{genTableName(v.Name.O, "")}, nil
 	}
 
 	e := &tableNameExtractor{
@@ -133,6 +135,9 @@ type tableRenameVisitor struct {
 
 func (v *tableRenameVisitor) Enter(in ast.Node) (ast.Node, bool) {
 	if v.hasErr {
+		return in, true
+	}
+	if _, ok := in.(*ast.ReferenceDef); ok {
 		return in, true
 	}
 	if t, ok := in.(*ast.TableName); ok {
@@ -167,11 +172,11 @@ func RenameDDLTable(stmt ast.StmtNode, targetTables []*filter.Table) (string, er
 
 	switch v := stmt.(type) {
 	case *ast.AlterDatabaseStmt:
-		v.Name = targetTables[0].Schema
+		v.Name = model.NewCIStr(targetTables[0].Schema)
 	case *ast.CreateDatabaseStmt:
-		v.Name = targetTables[0].Schema
+		v.Name = model.NewCIStr(targetTables[0].Schema)
 	case *ast.DropDatabaseStmt:
-		v.Name = targetTables[0].Schema
+		v.Name = model.NewCIStr(targetTables[0].Schema)
 	default:
 		visitor := &tableRenameVisitor{
 			targetNames: targetTables,

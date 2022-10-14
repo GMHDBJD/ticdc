@@ -18,13 +18,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/dustin/go-humanize"
 	"github.com/pingcap/errors"
 	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
 	"github.com/pingcap/tidb-tools/pkg/column-mapping"
 	"github.com/pingcap/tidb/util/filter"
 	router "github.com/pingcap/tidb/util/table-router"
-	dmconfig "github.com/pingcap/tiflow/dm/dm/config"
-	"github.com/pingcap/tiflow/dm/dm/master"
+	dmconfig "github.com/pingcap/tiflow/dm/config"
+	"github.com/pingcap/tiflow/dm/master"
 	"gopkg.in/yaml.v2"
 )
 
@@ -36,6 +37,7 @@ type UpstreamCfg struct {
 	ServerID               uint32             `yaml:"server-id" toml:"server-id" json:"server-id"`
 	Flavor                 string             `yaml:"flavor" toml:"flavor" json:"flavor"`
 	EnableGTID             bool               `yaml:"enable-gtid" toml:"enable-gtid" json:"enable-gtid"`
+	CaseSensitive          bool               `yaml:"case-sensitive" toml:"case-sensitive" json:"case-sensitive"`
 }
 
 func (u *UpstreamCfg) fromDMSourceConfig(from *dmconfig.SourceConfig) {
@@ -43,6 +45,7 @@ func (u *UpstreamCfg) fromDMSourceConfig(from *dmconfig.SourceConfig) {
 	u.ServerID = from.ServerID
 	u.Flavor = from.Flavor
 	u.EnableGTID = from.EnableGTID
+	u.CaseSensitive = from.CaseSensitive
 }
 
 func (u *UpstreamCfg) toDMSourceConfig() *dmconfig.SourceConfig {
@@ -72,12 +75,10 @@ func (u *UpstreamCfg) adjust() error {
 // It represents a DM subtask with multiple source configs embedded as Upstreams.
 // DISCUSS: support command line args. e.g. --start-time.
 type JobCfg struct {
-	Name                string                                `yaml:"name" toml:"name" json:"name"`
 	TaskMode            string                                `yaml:"task-mode" toml:"task-mode" json:"task-mode"`
 	ShardMode           string                                `yaml:"shard-mode" toml:"shard-mode" json:"shard-mode"` // when `shard-mode` set, we always enable sharding support.
 	IgnoreCheckingItems []string                              `yaml:"ignore-checking-items" toml:"ignore-checking-items" json:"ignore-checking-items"`
 	Timezone            string                                `yaml:"timezone" toml:"timezone" json:"timezone"`
-	CaseSensitive       bool                                  `yaml:"case-sensitive" toml:"case-sensitive" json:"case-sensitive"`
 	CollationCompatible string                                `yaml:"collation_compatible" toml:"collation_compatible" json:"collation_compatible"`
 	TargetDB            *dmconfig.DBConfig                    `yaml:"target-database" toml:"target-database" json:"target-database"`
 	ShadowTableRules    []string                              `yaml:"shadow-table-rules" toml:"shadow-table-rules" json:"shadow-table-rules"`
@@ -116,6 +117,8 @@ type JobCfg struct {
 	// BWList map[string]*filter.Rules `yaml:"black-white-list" toml:"black-white-list" json:"black-white-list"`
 	// EnableANSIQuotes bool `yaml:"ansi-quotes" toml:"ansi-quotes" json:"ansi-quotes"`
 	// RemoveMeta bool `yaml:"remove-meta"`
+
+	ModRevision uint64 `yaml:"mod-revision" toml:"mod-revision" json:"mod-revision"`
 }
 
 // DecodeFile reads file content from a given path and decodes it.
@@ -158,9 +161,7 @@ func (c *JobCfg) Clone() (*JobCfg, error) {
 func (c *JobCfg) ToTaskCfgs() map[string]*TaskCfg {
 	taskCfgs := make(map[string]*TaskCfg, len(c.Upstreams))
 	for _, mysqlInstance := range c.Upstreams {
-		// nolint:errcheck
-		jobCfg, _ := c.Clone()
-		taskCfg := (*TaskCfg)(jobCfg)
+		taskCfg := c.ToTaskCfg()
 		taskCfg.Upstreams = []*UpstreamCfg{mysqlInstance}
 		taskCfgs[mysqlInstance.SourceID] = taskCfg
 	}
@@ -173,7 +174,7 @@ func FromTaskCfgs(taskCfgs []*TaskCfg) *JobCfg {
 		return nil
 	}
 
-	jobCfg := (*JobCfg)(taskCfgs[0])
+	jobCfg := taskCfgs[0].ToJobCfg()
 	// nolint:errcheck
 	jobCfg, _ = jobCfg.Clone()
 	for i := 1; i < len(taskCfgs); i++ {
@@ -184,7 +185,10 @@ func FromTaskCfgs(taskCfgs []*TaskCfg) *JobCfg {
 
 // toDMTaskConfig transform a jobCfg to DM TaskCfg.
 func (c *JobCfg) toDMTaskConfig() (*dmconfig.TaskConfig, error) {
-	dmTaskCfg := &dmconfig.TaskConfig{}
+	dmTaskCfg := dmconfig.NewTaskConfig()
+	// set task name for verify
+	// we will replace task name with job-id when create dm-worker
+	dmTaskCfg.Name = "engine_task"
 
 	// Copy all the fields contained in dmTaskCfg.
 	content, err := c.Yaml()
@@ -215,6 +219,9 @@ func (c *JobCfg) fromDMTaskConfig(dmTaskCfg *dmconfig.TaskConfig) error {
 }
 
 func (c *JobCfg) adjust() error {
+	if err := c.verifySourceID(); err != nil {
+		return err
+	}
 	dmTaskCfg, err := c.toDMTaskConfig()
 	if err != nil {
 		return err
@@ -225,21 +232,56 @@ func (c *JobCfg) adjust() error {
 	return c.fromDMTaskConfig(dmTaskCfg)
 }
 
+func (c *JobCfg) verifySourceID() error {
+	sourceIDs := make(map[string]struct{})
+	for i, upstream := range c.Upstreams {
+		if upstream.SourceID == "" {
+			return errors.Errorf("source-id of %s upstream is empty", humanize.Ordinal(i+1))
+		}
+		if _, ok := sourceIDs[upstream.SourceID]; ok {
+			return errors.Errorf("source-id %s is duplicated", upstream.SourceID)
+		}
+		sourceIDs[upstream.SourceID] = struct{}{}
+	}
+	return nil
+}
+
+// ToTaskCfg converts JobCfg to TaskCfg.
+func (c *JobCfg) ToTaskCfg() *TaskCfg {
+	// nolint:errcheck
+	clone, _ := c.Clone()
+	return &TaskCfg{
+		JobCfg: *clone,
+	}
+}
+
 // TaskCfg shares same struct as JobCfg, but it only serves one upstream.
 // TaskCfg can be converted to an equivalent DM subtask by ToDMSubTaskCfg.
-type TaskCfg JobCfg
+// TaskCfg add some internal config for jobmaster/worker.
+type TaskCfg struct {
+	JobCfg
+
+	// FIXME: remove this item after fix https://github.com/pingcap/tiflow/issues/7304
+	NeedExtStorage bool
+}
+
+// ToJobCfg converts TaskCfg to JobCfg.
+func (c *TaskCfg) ToJobCfg() *JobCfg {
+	// nolint:errcheck
+	clone, _ := c.JobCfg.Clone()
+	return clone
+}
 
 // ToDMSubTaskCfg adapts a TaskCfg to a SubTaskCfg for worker now.
 // TODO: fully support all fields
-func (c *TaskCfg) ToDMSubTaskCfg() *dmconfig.SubTaskConfig {
+func (c *TaskCfg) ToDMSubTaskCfg(jobID string) *dmconfig.SubTaskConfig {
 	cfg := &dmconfig.SubTaskConfig{}
 	cfg.ShardMode = c.ShardMode
 	cfg.OnlineDDL = c.OnlineDDL
 	cfg.ShadowTableRules = c.ShadowTableRules
 	cfg.TrashTableRules = c.TrashTableRules
-	cfg.CaseSensitive = c.CaseSensitive
 	cfg.CollationCompatible = c.CollationCompatible
-	cfg.Name = c.Name
+	cfg.Name = jobID
 	cfg.Mode = c.TaskMode
 	cfg.IgnoreCheckingItems = c.IgnoreCheckingItems
 	cfg.MetaSchema = c.MetaSchema
@@ -254,6 +296,7 @@ func (c *TaskCfg) ToDMSubTaskCfg() *dmconfig.SubTaskConfig {
 	cfg.From = *c.Upstreams[0].DBCfg
 	cfg.ServerID = c.Upstreams[0].ServerID
 	cfg.Flavor = c.Upstreams[0].Flavor
+	cfg.CaseSensitive = c.Upstreams[0].CaseSensitive
 
 	cfg.RouteRules = make([]*router.TableRule, len(c.Upstreams[0].RouteRules))
 	for j, name := range c.Upstreams[0].RouteRules {

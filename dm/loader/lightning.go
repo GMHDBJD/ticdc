@@ -25,21 +25,21 @@ import (
 	"github.com/pingcap/tidb/br/pkg/lightning/checkpoints"
 	lcfg "github.com/pingcap/tidb/br/pkg/lightning/config"
 	tidbpromutil "github.com/pingcap/tidb/util/promutil"
-	"github.com/pingcap/tiflow/engine/pkg/promutil"
-	"github.com/prometheus/client_golang/prometheus"
-	clientv3 "go.etcd.io/etcd/client/v3"
-	"go.uber.org/atomic"
-	"go.uber.org/zap"
-
-	"github.com/pingcap/tiflow/dm/dm/config"
-	"github.com/pingcap/tiflow/dm/dm/pb"
-	"github.com/pingcap/tiflow/dm/dm/unit"
+	"github.com/pingcap/tiflow/dm/config"
+	"github.com/pingcap/tiflow/dm/pb"
 	"github.com/pingcap/tiflow/dm/pkg/binlog"
 	"github.com/pingcap/tiflow/dm/pkg/conn"
 	tcontext "github.com/pingcap/tiflow/dm/pkg/context"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/pingcap/tiflow/dm/pkg/storage"
+	"github.com/pingcap/tiflow/dm/pkg/terror"
 	"github.com/pingcap/tiflow/dm/pkg/utils"
+	"github.com/pingcap/tiflow/dm/unit"
+	"github.com/pingcap/tiflow/engine/pkg/promutil"
+	"github.com/prometheus/client_golang/prometheus"
+	clientv3 "go.etcd.io/etcd/client/v3"
+	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 const (
@@ -73,6 +73,8 @@ type LightningLoader struct {
 	closed         atomic.Bool
 	metaBinlog     atomic.String
 	metaBinlogGTID atomic.String
+
+	statusRecorder *statusRecorder
 }
 
 // NewLightning creates a new Loader importing data with lightning.
@@ -89,6 +91,7 @@ func NewLightning(cfg *config.SubTaskConfig, cli *clientv3.Client, workerName st
 		lightningGlobalConfig: lightningCfg,
 		core:                  lightning.New(lightningCfg),
 		logger:                logger.WithFields(zap.String("task", cfg.Name), zap.String("unit", "lightning-load")),
+		statusRecorder:        newStatusRecorder(),
 	}
 	return loader
 }
@@ -96,11 +99,9 @@ func NewLightning(cfg *config.SubTaskConfig, cli *clientv3.Client, workerName st
 func makeGlobalConfig(cfg *config.SubTaskConfig) *lcfg.GlobalConfig {
 	lightningCfg := lcfg.NewGlobalConfig()
 	if cfg.To.Security != nil {
-		lightningCfg.Security.CAPath = cfg.To.Security.SSLCA
-		lightningCfg.Security.CertPath = cfg.To.Security.SSLCert
-		lightningCfg.Security.KeyPath = cfg.To.Security.SSLKey
-		// use task name as tls config name to prevent multiple subtasks from conflicting with each other
-		lightningCfg.Security.TLSConfigName = cfg.Name
+		lightningCfg.Security.CABytes = cfg.To.Security.SSLCABytes
+		lightningCfg.Security.CertBytes = cfg.To.Security.SSLCertBytes
+		lightningCfg.Security.KeyBytes = cfg.To.Security.SSLKeyBytes
 	}
 	lightningCfg.TiDB.Host = cfg.To.Host
 	lightningCfg.TiDB.Psw = cfg.To.Password
@@ -216,8 +217,10 @@ func (l *LightningLoader) runLightning(ctx context.Context, cfg *lcfg.Config) er
 	var opts []lightning.Option
 	if l.cfg.MetricsFactory != nil {
 		// this branch means dataflow engine has set a Factory, the Factory itself
-		// will register and deregister metrics, so we must use NoopRegistry
-		// to avoid duplicated registration.
+		// will register and deregister metrics, but lightning will expect the
+		// register and deregister at the beginning and end of its lifetime.
+		// So we use dataflow engine's Factory to register, and use dataflow engine's
+		// global metrics to manually deregister.
 		opts = append(opts,
 			lightning.WithPromFactory(
 				promutil.NewWrappingFactory(
@@ -225,7 +228,7 @@ func (l *LightningLoader) runLightning(ctx context.Context, cfg *lcfg.Config) er
 					"",
 					prometheus.Labels{"task": l.cfg.Name, "source_id": l.cfg.SourceID},
 				)),
-			lightning.WithPromRegistry(tidbpromutil.NewNoopRegistry()))
+			lightning.WithPromRegistry(promutil.GetGlobalMetricRegistry()))
 	} else {
 		registry := prometheus.DefaultGatherer.(prometheus.Registerer)
 		failpoint.Inject("DontUnregister", func() {
@@ -263,7 +266,45 @@ func (l *LightningLoader) runLightning(ctx context.Context, cfg *lcfg.Config) er
 			}
 		}
 	})
-	return err
+	return terror.ErrLoadLightningRuntime.Delegate(err)
+}
+
+func (l *LightningLoader) getLightningConfig() (*lcfg.Config, error) {
+	cfg := lcfg.NewConfig()
+	if err := cfg.LoadFromGlobal(l.lightningGlobalConfig); err != nil {
+		return nil, err
+	}
+	// TableConcurrency is adjusted to the value of RegionConcurrency
+	// when using TiDB backend.
+	// TODO: should we set the TableConcurrency separately.
+	cfg.App.RegionConcurrency = l.cfg.LoaderConfig.PoolSize
+	cfg.Routes = l.cfg.RouteRules
+
+	cfg.Checkpoint.Driver = lcfg.CheckpointDriverFile
+	var cpPath string
+	// l.cfg.LoaderConfig.Dir may be a s3 path, and Lightning supports checkpoint in s3, we can use storage.AdjustPath to adjust path both local and s3.
+	cpPath, err := storage.AdjustPath(l.cfg.LoaderConfig.Dir, string(filepath.Separator)+lightningCheckpointFileName)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Checkpoint.DSN = cpPath
+	cfg.Checkpoint.KeepAfterSuccess = lcfg.CheckpointOrigin
+
+	cfg.TikvImporter.OnDuplicate = string(l.cfg.OnDuplicate)
+	cfg.TiDB.Vars = make(map[string]string)
+	cfg.Routes = l.cfg.RouteRules
+	if l.cfg.To.Session != nil {
+		for k, v := range l.cfg.To.Session {
+			cfg.TiDB.Vars[k] = v
+		}
+	}
+	cfg.TiDB.StrSQLMode = l.sqlMode
+	cfg.TiDB.Vars = map[string]string{
+		"time_zone": l.timeZone,
+		// always set transaction mode to optimistic
+		"tidb_txn_mode": "optimistic",
+	}
+	return cfg, nil
 }
 
 func (l *LightningLoader) restore(ctx context.Context) error {
@@ -280,40 +321,19 @@ func (l *LightningLoader) restore(ctx context.Context) error {
 		if err = l.checkPointList.RegisterCheckPoint(ctx); err != nil {
 			return err
 		}
-		cfg := lcfg.NewConfig()
-		if err = cfg.LoadFromGlobal(l.lightningGlobalConfig); err != nil {
-			return err
-		}
-		cfg.Routes = l.cfg.RouteRules
-
-		cfg.Checkpoint.Driver = lcfg.CheckpointDriverFile
-		var cpPath string
-		// l.cfg.LoaderConfig.Dir may be a s3 path, and Lightning supports checkpoint in s3, we can use storage.AdjustPath to adjust path both local and s3.
-		cpPath, err = storage.AdjustPath(l.cfg.LoaderConfig.Dir, string(filepath.Separator)+lightningCheckpointFileName)
+		var cfg *lcfg.Config
+		cfg, err = l.getLightningConfig()
 		if err != nil {
 			return err
-		}
-		cfg.Checkpoint.DSN = cpPath
-		cfg.Checkpoint.KeepAfterSuccess = lcfg.CheckpointOrigin
-
-		cfg.TikvImporter.OnDuplicate = string(l.cfg.OnDuplicate)
-		cfg.TiDB.Vars = make(map[string]string)
-		cfg.Routes = l.cfg.RouteRules
-		if l.cfg.To.Session != nil {
-			for k, v := range l.cfg.To.Session {
-				cfg.TiDB.Vars[k] = v
-			}
-		}
-		cfg.TiDB.StrSQLMode = l.sqlMode
-		cfg.TiDB.Vars = map[string]string{
-			"time_zone": l.timeZone,
-			// always set transaction mode to optimistic
-			"tidb_txn_mode": "optimistic",
 		}
 		err = l.runLightning(ctx, cfg)
 		if err == nil {
 			l.finish.Store(true)
 			err = l.checkPointList.UpdateStatus(ctx, lightningStatusFinished)
+			if err != nil {
+				l.logger.Error("failed to update checkpoint status", zap.Error(err))
+				return err
+			}
 		} else {
 			l.logger.Error("failed to runlightning", zap.Error(err))
 		}
@@ -444,17 +464,21 @@ func (l *LightningLoader) Update(ctx context.Context, cfg *config.SubTaskConfig)
 func (l *LightningLoader) status() *pb.LoadStatus {
 	finished, total := l.core.Status()
 	progress := percent(finished, total, l.finish.Load())
+	currentSpeed := l.statusRecorder.getSpeed(finished)
+
 	l.logger.Info("progress status of lightning",
 		zap.Int64("finished_bytes", finished),
 		zap.Int64("total_bytes", total),
 		zap.String("progress", progress),
+		zap.Int64("current speed (bytes / seconds)", currentSpeed),
 	)
 	s := &pb.LoadStatus{
-		FinishedBytes:  finished,
-		TotalBytes:     total,
-		Progress:       progress,
-		MetaBinlog:     l.metaBinlog.Load(),
-		MetaBinlogGTID: l.metaBinlogGTID.Load(),
+		FinishedBytes:              finished,
+		TotalBytes:                 total,
+		Progress:                   progress,
+		MetaBinlog:                 l.metaBinlog.Load(),
+		MetaBinlogGTID:             l.metaBinlogGTID.Load(),
+		CurrentSpeedBytesPerSecond: currentSpeed,
 	}
 	return s
 }

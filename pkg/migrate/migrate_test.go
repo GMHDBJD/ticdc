@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/pingcap/errors"
+	filter "github.com/pingcap/tidb/util/table-filter"
 	"github.com/pingcap/tiflow/cdc/model"
 	"github.com/pingcap/tiflow/pkg/config"
 	"github.com/pingcap/tiflow/pkg/etcd"
@@ -82,9 +83,56 @@ func TestMigration(t *testing.T) {
 		StartTs: 2, TargetTs: 200, State: model.StateError,
 	}
 	status2 := model.ChangeFeedStatus{ResolvedTs: 3, CheckpointTs: 2}
+	cfg := config.GetDefaultReplicaConfig()
+	cfg.EnableOldValue = false
+	cfg.CheckGCSafePoint = false
+	cfg.Sink = &config.SinkConfig{
+		DispatchRules: []*config.DispatchRule{
+			{
+				Matcher:        []string{"a", "b", "c"},
+				DispatcherRule: "",
+				PartitionRule:  "rule",
+				TopicRule:      "topic",
+			},
+		},
+		Protocol: "aaa",
+		ColumnSelectors: []*config.ColumnSelector{
+			{
+				Matcher: []string{"a", "b", "c"},
+				Columns: []string{"a", "b"},
+			},
+		},
+		SchemaRegistry: "bbb",
+		TxnAtomicity:   "aa",
+	}
+	cfg.Consistent = &config.ConsistentConfig{
+		Level:             "1",
+		MaxLogSize:        99,
+		FlushIntervalInMs: 10,
+		Storage:           "s3",
+	}
+	cfg.Filter = &config.FilterConfig{
+		Rules: []string{"a", "b", "c"},
+		MySQLReplicationRules: &filter.MySQLReplicationRules{
+			DoTables: []*filter.Table{{
+				Schema: "testdo",
+				Name:   "testgotable",
+			}},
+			DoDBs: []string{"ad", "bdo"},
+			IgnoreTables: []*filter.Table{
+				{
+					Schema: "testignore",
+					Name:   "testaaaingore",
+				},
+			},
+			IgnoreDBs: []string{"aa", "b2"},
+		},
+		IgnoreTxnStartTs: []uint64{1, 2, 3},
+	}
 	info3 := model.ChangeFeedInfo{
 		SinkURI: "test1",
 		StartTs: 3, TargetTs: 300, State: model.StateFailed,
+		Config: cfg,
 	}
 	status3 := model.ChangeFeedStatus{ResolvedTs: 4, CheckpointTs: 3}
 
@@ -139,18 +187,18 @@ func TestMigration(t *testing.T) {
 		require.Equal(t, tc.status, status)
 	}
 
-	// set timeout to make sure this test will finished
+	// set timeout to make sure this test will be finished
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cdcCli, err := etcd.NewCDCEtcdClient(ctx, cli, "default")
 	require.Nil(t, err)
 
-	m := NewMigrator(&cdcCli, []string{}, config.GetGlobalServerConfig())
+	m := NewMigrator(cdcCli, []string{}, config.GetGlobalServerConfig())
 	migrator := m.(*migrator)
 	migrator.createPDClientFunc = func(ctx context.Context,
 		pdEndpoints []string, conf *security.Credential,
 	) (pd.Client, error) {
-		mock := newMockPDClient(ctx, true)
+		mock := newMockPDClient(true)
 		mock.respData = "{}"
 		mock.clusterID = 1
 		return mock, nil
@@ -200,7 +248,9 @@ func TestMigration(t *testing.T) {
 		require.Equal(t, uint64(1), info.UpstreamID)
 		tc.info.UpstreamID = info.UpstreamID
 		require.Equal(t, model.DefaultNamespace, info.Namespace)
+		require.Equal(t, tc.id, info.ID)
 		tc.info.Namespace = info.Namespace
+		tc.info.ID = info.ID
 		require.Equal(t, tc.info, info)
 		statusResp, err := cli.Get(context.Background(),
 			fmt.Sprintf("%s%s/%s", etcd.DefaultClusterAndNamespacePrefix,
@@ -365,7 +415,7 @@ func TestMigrationNonDefaultCluster(t *testing.T) {
 	cdcCli, err := etcd.NewCDCEtcdClient(ctx, cli, "nodefault")
 	require.Nil(t, err)
 
-	m := NewMigrator(&cdcCli, []string{}, config.GetGlobalServerConfig())
+	m := NewMigrator(cdcCli, []string{}, config.GetGlobalServerConfig())
 	migrator := m.(*migrator)
 	migrator.createPDClientFunc = func(ctx context.Context,
 		pdEndpoints []string, conf *security.Credential,
@@ -444,7 +494,7 @@ func (m *mockPDClient) GetTS(ctx context.Context) (int64, int64, error) {
 	return oracle.GetPhysical(time.Now()), 0, nil
 }
 
-func newMockPDClient(ctx context.Context, normal bool) *mockPDClient {
+func newMockPDClient(normal bool) *mockPDClient {
 	mock := &mockPDClient{}
 	status := http.StatusOK
 	if !normal {
@@ -465,7 +515,7 @@ func TestMigrateGcServiceSafePoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := &migrator{}
-	mockClient := newMockPDClient(ctx, true)
+	mockClient := newMockPDClient(true)
 
 	data := &pdutil.ListServiceGCSafepoint{
 		ServiceGCSafepoints: []*pdutil.ServiceSafePoint{
@@ -515,7 +565,7 @@ func TestMigrateGcServiceSafePoint(t *testing.T) {
 func TestRemoveOldGcServiceSafePointFailed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mockClient := newMockPDClient(ctx, true)
+	mockClient := newMockPDClient(true)
 
 	m := &migrator{}
 	data := &pdutil.ListServiceGCSafepoint{
@@ -555,7 +605,7 @@ func TestRemoveOldGcServiceSafePointFailed(t *testing.T) {
 func TestListServiceSafePointFailed(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mockClient := newMockPDClient(ctx, true)
+	mockClient := newMockPDClient(true)
 
 	m := &migrator{}
 	mockClient.respData = "xxx"
@@ -566,7 +616,7 @@ func TestListServiceSafePointFailed(t *testing.T) {
 func TestNoServiceSafePoint(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mockClient := newMockPDClient(ctx, true)
+	mockClient := newMockPDClient(true)
 
 	m := &migrator{}
 	data := &pdutil.ListServiceGCSafepoint{

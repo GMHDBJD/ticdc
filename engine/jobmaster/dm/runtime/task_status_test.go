@@ -16,10 +16,9 @@ package runtime
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
-
 	frameModel "github.com/pingcap/tiflow/engine/framework/model"
 	"github.com/pingcap/tiflow/engine/jobmaster/dm/metadata"
+	"github.com/stretchr/testify/require"
 )
 
 func TestTaskStatus(t *testing.T) {
@@ -29,4 +28,5 @@ func TestTaskStatus(t *testing.T) {
 	require.Equal(t, offlineStatus.Unit, frameModel.WorkerType(0))
 	require.Equal(t, offlineStatus.Task, "task_status_test")
 	require.Equal(t, offlineStatus.Stage, metadata.StageUnscheduled)
+	require.Equal(t, offlineStatus.CfgModRevision, uint64(0))
 }
